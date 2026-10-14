@@ -10,10 +10,8 @@
 	"assets": {
 		"directory": "./public"
 	},
-	// Do not put a placeholder Hyperdrive id here — Cloudflare deploy rejects unknown ids.
+	// Production `npm run deploy` creates Hyperdrive (DigitalOcean TLS) and writes the real id.
 	// Local `npm run api` injects Hyperdrive via scripts/dev.mjs.
-	// Production: create Hyperdrive, then add:
-	// "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<real-id>" }]
 	// POSTGRES_PASSWORD is hardcoded in src/croco/source.ts.
 	// Other secrets live in .dev.vars for local runs and in `wrangler secret` for deploys.
 	"vars": {
