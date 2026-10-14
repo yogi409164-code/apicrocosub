@@ -1,4 +1,3 @@
-import { connect } from "cloudflare:sockets";
 import postgres from "postgres";
 
 type Row = Record<string, unknown>;
@@ -92,11 +91,7 @@ class PgStatement {
 	}
 }
 
-/**
- * D1-shaped access to PostgreSQL through Hyperdrive, so the routes run unchanged on either database.
- * Tables are schema-qualified in every statement because Hyperdrive pools connections and
- * session settings such as search_path do not carry between queries.
- */
+/** D1-shaped access to PostgreSQL. Tables are schema-qualified in every statement. */
 export class PgDatabase {
 	readonly dialect = "postgresql";
 	private readonly sql: postgres.Sql;
@@ -141,128 +136,13 @@ export class PgDatabase {
 	}
 }
 
-// ---- other PostgreSQL servers (admin Database page) ----
-
-export type PgTarget = { host: string; port: number; database: string; user: string; password: string; sslmode: string; schema: string };
-export type TableCount = { name: string; rows: number | null };
-
-function sslOption(mode: string): boolean | "require" | "prefer" | "allow" | "verify-full" {
-	if (mode === "disable") return false;
-	if (mode === "allow") return "allow";
-	if (mode === "require") return "require";
-	if (mode === "verify-ca" || mode === "verify-full") return "verify-full";
-	return "prefer";
-}
-
-const SSL_REQUEST = new Uint8Array([0, 0, 0, 8, 4, 210, 22, 47]);
-
-function withDeadline<T>(work: Promise<T>, seconds: number, message: string): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const deadline = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new Error(message)), seconds * 1000);
-	});
-	return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
-}
-
-/**
- * postgres.js reconnects without end when the server is unreachable or the TLS handshake fails,
- * so both are checked here first with a deadline.
- */
-export async function checkReachable(target: PgTarget): Promise<void> {
-	const hostname = target.host.trim();
-	const wantsTls = target.sslmode !== "disable";
-	const socket = connect({ hostname, port: target.port }, { secureTransport: wantsTls ? "starttls" : "off", allowHalfOpen: false });
-	socket.closed.catch(() => undefined);
-	try {
-		await withDeadline(
-			(async () => {
-				await socket.opened;
-				if (!wantsTls) return;
-				const writer = socket.writable.getWriter();
-				await writer.write(SSL_REQUEST);
-				writer.releaseLock();
-				const reader = socket.readable.getReader();
-				const { value } = await reader.read();
-				reader.releaseLock();
-				if (value?.[0] !== 83) {
-					if (target.sslmode === "require" || target.sslmode.startsWith("verify")) throw new Error("The server does not accept SSL connections");
-					return;
-				}
-				const secure = socket.startTls({ expectedServerHostname: hostname });
-				secure.closed.catch(() => undefined);
-				const handshake = (error: unknown) => new Error(`TLS handshake failed (${error instanceof Error ? error.message : String(error)})`);
-				try {
-					await secure.opened.catch((error: unknown) => {
-						throw handshake(error);
-					});
-					const tlsWriter = secure.writable.getWriter();
-					await tlsWriter.write(SSL_REQUEST).catch((error: unknown) => {
-						throw handshake(error);
-					});
-					tlsWriter.releaseLock();
-				} finally {
-					await secure.close().catch(() => undefined);
-				}
-			})(),
-			10,
-			"Connection timed out",
-		);
-	} finally {
-		await socket.close().catch(() => undefined);
-	}
-}
-
-/** Direct connection from the Worker. Only servers with a publicly trusted TLS certificate accept it. */
-export function connectTarget(target: PgTarget): postgres.Sql {
-	return postgres({
-		host: target.host.trim(),
-		port: target.port,
-		database: target.database.trim(),
-		username: target.user.trim(),
-		password: target.password || undefined,
-		ssl: sslOption(target.sslmode),
-		max: 1,
-		connect_timeout: 10,
-		fetch_types: false,
-		prepare: false,
-		onnotice: () => undefined,
-	});
-}
-
 export async function schemaTables(sql: Sql, schema: string): Promise<string[]> {
 	const rows = await sql.unsafe<Row[]>("SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE' ORDER BY table_name", [schema]);
 	return rows.map((row) => String(row.table_name));
 }
 
-/** Row counts for every app table. Tables missing from the schema report null. */
-export async function countTables(sql: Sql, schema: string): Promise<TableCount[]> {
-	const existing = await schemaTables(sql, schema);
-	const counts: TableCount[] = [];
-	for (const name of APP_TABLES) {
-		if (!existing.includes(name)) {
-			counts.push({ name, rows: null });
-			continue;
-		}
-		const [row] = await sql.unsafe<Row[]>(`SELECT COUNT(*)::int AS total FROM ${quoteIdent(schema)}.${quoteIdent(name)}`);
-		counts.push({ name, rows: Number(row?.total ?? 0) });
-	}
-	return counts;
-}
-
 export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(schemaSql(schema)).simple();
-}
-
-export async function insertRows(sql: Sql, schema: string, table: string, rows: Row[]): Promise<void> {
-	if (!rows.length) return;
-	const columns = Object.keys(rows[0]);
-	const params: unknown[] = [];
-	const values = rows.map((row) => `(${columns.map((column) => `$${params.push(row[column] ?? null)}`).join(", ")})`);
-	await sql.unsafe(`INSERT INTO ${quoteIdent(schema)}.${quoteIdent(table)} (${columns.map(quoteIdent).join(", ")}) VALUES ${values.join(", ")}`, params as postgres.ParameterOrJSON<never>[]);
-}
-
-export async function clearTable(sql: Sql, schema: string, table: string): Promise<void> {
-	await sql.unsafe(`DELETE FROM ${quoteIdent(schema)}.${quoteIdent(table)}`);
 }
 
 function schemaSql(schema: string): string {

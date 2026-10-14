@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { APP_TABLES, checkReachable, clearTable, connectTarget, countTables, createSchema, insertRows, PgDatabase, type PgTarget, type TableCount } from "./pg";
+import { PgDatabase } from "./pg";
+import { DATABASE_URL, DB_SCHEMA } from "./source";
 
 type App = Hono<{ Bindings: Env }>;
 type Ctx = Context<{ Bindings: Env }>;
@@ -30,7 +31,6 @@ const ADMIN_PAGES = [
 	"tickets",
 	"delivery",
 	"data",
-	"database",
 	"maps",
 	"settings",
 ];
@@ -1481,181 +1481,6 @@ async function refundTimeline(env: Env, paymentId: string) {
 	};
 }
 
-// ---- admin database page ----
-
-const SSL_MODES = ["", "disable", "allow", "prefer", "require", "verify-ca", "verify-full"];
-const SCHEMA_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const TABLE_KEYS: Record<string, string> = { roles: "name", juice_categories: "name", phone_otps: "phone", uploads: "path", upload_chunks: "path, idx" };
-
-async function databaseAdmin(c: Ctx): Promise<Row> {
-	const user = await currentUser(c);
-	if (!(await pagesFor(c.env.DB, user)).includes("database")) throw new HttpError(403, "Admin access required.");
-	return user;
-}
-
-function readTarget(body: Body): PgTarget {
-	const host = reqStr(body, "host", 1, 255);
-	const port = optNum(body, "port", { ge: 1, le: 65535, integer: true, fallback: 5432 }) ?? 5432;
-	const database = reqStr(body, "database", 1, 120);
-	const user = reqStr(body, "user", 1, 120);
-	const password = optStr(body, "password", 500, "") ?? "";
-	const sslmode = literal(body, "sslmode", SSL_MODES, "require");
-	const schema = reqStr(body, "schema_name", 1, 63);
-	if (!SCHEMA_NAME.test(schema)) invalid("schema_name", `String should match pattern '${SCHEMA_NAME.source}'`, schema);
-	return { host, port, database, user, password, sslmode, schema };
-}
-
-function dbMessage(error: unknown): string {
-	const message = String(error instanceof Error ? error.message : error).split("\n")[0].trim() || "Unknown error";
-	if (/internal error|stream was cancelled|certificate|tls/i.test(message)) {
-		return `${message}. Cloudflare Workers only connect to databases with a publicly trusted TLS certificate; reach other servers through Hyperdrive or the FastAPI service`;
-	}
-	return message;
-}
-
-function totalRows(tables: TableCount[]): number {
-	return tables.reduce((sum, table) => sum + (table.rows ?? 0), 0);
-}
-
-async function sourceTables(db: D1Database): Promise<string[]> {
-	const pg = postgresOf(db);
-	return pg ? pg.tables() : [];
-}
-
-async function localCounts(db: D1Database): Promise<TableCount[]> {
-	const existing = await sourceTables(db);
-	const counts: TableCount[] = [];
-	for (const name of APP_TABLES) {
-		counts.push({ name, rows: existing.includes(name) ? num((await one(db, `SELECT COUNT(*) AS total FROM ${name}`))?.total) : null });
-	}
-	return counts;
-}
-
-async function databaseDetails(env: Env) {
-	const db = env.DB;
-	const schema = setting(env, "DB_SCHEMA", "Crocosip_mobile_app");
-	const details = {
-		engine: "PostgreSQL",
-		host: setting(env, "POSTGRES_HOST"),
-		port: int(setting(env, "POSTGRES_PORT"), 25060),
-		database: setting(env, "POSTGRES_DB"),
-		user: setting(env, "POSTGRES_USER"),
-		schema,
-		sslmode: setting(env, "POSTGRES_SSLMODE") || "require",
-		connected: false,
-		server_version: null as string | null,
-		size: null as string | null,
-		tables: [] as TableCount[],
-		total_rows: 0,
-		error: null as string | null,
-	};
-	try {
-		details.server_version = text((await one(db, "SHOW server_version"))?.server_version);
-		details.size = text((await one(db, "SELECT pg_size_pretty(pg_database_size(current_database())) AS size"))?.size);
-		details.tables = await localCounts(db);
-		details.connected = true;
-	} catch (error) {
-		details.error = dbMessage(error);
-	}
-	details.total_rows = totalRows(details.tables);
-	return details;
-}
-
-function isCurrentDatabase(env: Env, target: PgTarget): boolean {
-	if (!postgresOf(env.DB)) return false;
-	return (
-		target.host.trim().toLowerCase() === setting(env, "POSTGRES_HOST").toLowerCase() &&
-		target.port === int(setting(env, "POSTGRES_PORT"), 5432) &&
-		target.database.trim() === setting(env, "POSTGRES_DB") &&
-		target.schema === setting(env, "DB_SCHEMA", "Crocosip_mobile_app")
-	);
-}
-
-async function reachTarget(target: PgTarget): Promise<void> {
-	try {
-		await checkReachable(target);
-	} catch (error) {
-		throw new HttpError(400, `Could not connect: ${dbMessage(error)}`);
-	}
-}
-
-async function testDatabase(c: Ctx, target: PgTarget) {
-	await reachTarget(target);
-	const sql = connectTarget(target);
-	try {
-		const [version] = await sql.unsafe("SHOW server_version");
-		const [found] = await sql.unsafe("SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = $1) AS present", [target.schema]);
-		const schemaExists = found?.present === true;
-		const tables = schemaExists ? await countTables(sql, target.schema) : [];
-		return {
-			connected: true,
-			host: target.host.trim(),
-			database: target.database.trim(),
-			schema: target.schema,
-			server_version: text(version?.server_version),
-			schema_exists: schemaExists,
-			same_as_current: isCurrentDatabase(c.env, target),
-			tables,
-			total_rows: totalRows(tables),
-		};
-	} catch (error) {
-		throw new HttpError(400, `Could not connect: ${dbMessage(error)}`);
-	} finally {
-		c.executionCtx.waitUntil(sql.end({ timeout: 5 }).catch(() => undefined));
-	}
-}
-
-/** Copies every app table into the target in one transaction, so a failure leaves it unchanged. */
-async function transferDatabase(c: Ctx, target: PgTarget, replace: boolean) {
-	if (isCurrentDatabase(c.env, target)) throw new HttpError(400, "That is the current database. Enter a different database or schema.");
-	const started = Date.now();
-	const db = c.env.DB;
-	const available = await sourceTables(db);
-	await reachTarget(target);
-	const sql = connectTarget(target);
-	try {
-		const copied = (await sql.begin(async (tx) => {
-			await createSchema(tx, target.schema);
-			const existing = await countTables(tx, target.schema);
-			if (existing.some((table) => (table.rows ?? 0) > 0) && !replace) {
-				throw new HttpError(400, "The new database already has CrocoSip data. Turn on Replace existing data to overwrite it.");
-			}
-			if (replace) {
-				for (const table of [...APP_TABLES].reverse()) await clearTable(tx, target.schema, table);
-			}
-			const result: TableCount[] = [];
-			for (const table of APP_TABLES) {
-				let count = 0;
-				if (available.includes(table)) {
-					const size = table === "upload_chunks" ? 4 : 500;
-					for (;;) {
-						const rows = await many(db, `SELECT * FROM ${table} ORDER BY ${TABLE_KEYS[table] ?? "id"} LIMIT ? OFFSET ?`, size, count);
-						await insertRows(tx, target.schema, table, rows);
-						count += rows.length;
-						if (rows.length < size) break;
-					}
-				}
-				result.push({ name: table, rows: count });
-			}
-			return result;
-		})) as TableCount[];
-		return {
-			status: "ok",
-			host: target.host.trim(),
-			database: target.database.trim(),
-			schema: target.schema,
-			tables: copied,
-			total_rows: totalRows(copied),
-			seconds: Math.round((Date.now() - started) / 100) / 10,
-		};
-	} catch (error) {
-		if (error instanceof HttpError) throw error;
-		throw new HttpError(400, `Transfer stopped and nothing was saved: ${dbMessage(error)}`);
-	} finally {
-		c.executionCtx.waitUntil(sql.end({ timeout: 5 }).catch(() => undefined));
-	}
-}
-
 // ---- routes ----
 
 type RouteOptions = { auth?: boolean; query?: string[]; status?: number };
@@ -1688,7 +1513,7 @@ export function registerCroco(app: App) {
 			await ensureSeed(c.env.DB);
 		} catch (error) {
 			console.error("Database seed failed:", error);
-			const hint = "Check the Hyperdrive connection to DigitalOcean PostgreSQL";
+			const hint = "Check DATABASE_URL in src/croco/source.ts";
 			return c.json({ detail: `Database is not ready. ${hint}, then try again.` }, 503);
 		}
 		await next();
@@ -1701,7 +1526,7 @@ export function registerCroco(app: App) {
 	route("get", "/health", "health", "Health check", (c) => ({
 		status: "ok",
 		service: setting(c.env, "APP_NAME", "Crocosip API"),
-		schema: setting(c.env, "DB_SCHEMA", "Crocosip_mobile_app"),
+		schema: setting(c.env, "DB_SCHEMA", DB_SCHEMA),
 		database: "postgresql",
 	}));
 	route("post", "/db/setup", "health", "Create missing tables and seed data", async (c) => {
@@ -1709,14 +1534,15 @@ export function registerCroco(app: App) {
 		const created = pg ? await pg.setup() : [];
 		seeded = null;
 		await ensureSeed(c.env.DB);
-		return { status: "ok", schema: setting(c.env, "DB_SCHEMA", "Crocosip_mobile_app"), created_tables: created, added_columns: [], errors: [], tables: pg ? await pg.tables() : [] };
+		return { status: "ok", schema: setting(c.env, "DB_SCHEMA", DB_SCHEMA), created_tables: created, added_columns: [], errors: [], tables: pg ? await pg.tables() : [] };
 	});
 	route("get", "/db/check", "health", "Check the database", async (c) => {
 		const pg = postgresOf(c.env.DB);
-		const schema = setting(c.env, "DB_SCHEMA", "Crocosip_mobile_app");
+		const schema = setting(c.env, "DB_SCHEMA", DB_SCHEMA);
+		const info = new URL(DATABASE_URL);
 		const tables = pg ? await pg.tables() : [];
 		const users = tables.includes("users") ? num((await one(c.env.DB, "SELECT COUNT(*) AS total FROM users"))?.total) : 0;
-		return { status: tables.length ? "ok" : "missing_schema", connected: true, host: setting(c.env, "POSTGRES_HOST"), port: int(setting(c.env, "POSTGRES_PORT"), 25060), database: setting(c.env, "POSTGRES_DB"), schema, schema_exists: tables.length > 0, tables, user_count: users, dialect: "postgresql" };
+		return { status: tables.length ? "ok" : "missing_schema", connected: true, host: info.hostname, port: Number(info.port || 5432), database: decodeURIComponent(info.pathname.slice(1)), schema, schema_exists: tables.length > 0, tables, user_count: users, dialect: "postgresql" };
 	});
 
 	// ---- catalog ----
@@ -3048,24 +2874,5 @@ export function registerCroco(app: App) {
 		} catch (error) {
 			notFoundOr400(error);
 		}
-	}, { auth: true });
-
-	// ---- admin: database ----
-	route("get", "/admin/database", "admin", "Current database details", async (c) => {
-		await databaseAdmin(c);
-		return databaseDetails(c.env);
-	}, { auth: true });
-
-	route("post", "/admin/database/test", "admin", "Test another PostgreSQL database", async (c) => {
-		await databaseAdmin(c);
-		return testDatabase(c, readTarget(await bodyOf(c)));
-	}, { auth: true });
-
-	route("post", "/admin/database/transfer", "admin", "Copy all data to another PostgreSQL database", async (c) => {
-		await databaseAdmin(c);
-		const body = await bodyOf(c);
-		const target = readTarget(body);
-		const replace = optBool(body, "replace") ?? false;
-		return transferDatabase(c, target, replace);
 	}, { auth: true });
 }

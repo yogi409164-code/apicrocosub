@@ -4,43 +4,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-
-function parseVars(text) {
-	return Object.fromEntries(
-		text
-			.replace(/^\s*\/\/.*$/gm, "")
-			.split(/\r?\n/)
-			.filter((line) => line.includes("=") && !line.trim().startsWith("{"))
-			.map((line) => {
-				const i = line.indexOf("=");
-				return [line.slice(0, i).trim().replace(/^"+|"+$/g, ""), line.slice(i + 1).trim().replace(/^"|"+$/g, "")];
-			})
-			.filter(([key]) => key),
-	);
-}
-
-const config = JSON.parse(fs.readFileSync(path.join(root, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
-const secrets = parseVars(fs.readFileSync(path.join(root, ".dev.vars"), "utf8"));
-const v = config.vars;
-const user = encodeURIComponent(v.POSTGRES_USER);
-const password = encodeURIComponent(secrets.POSTGRES_PASSWORD ?? "");
-const local = `postgresql://${user}:${password}@${v.POSTGRES_HOST}:${v.POSTGRES_PORT}/${v.POSTGRES_DB}?sslmode=${v.POSTGRES_SSLMODE || "require"}`;
+const source = fs.readFileSync(path.join(root, "src/croco/source.ts"), "utf8");
+const local = source.match(/export const DATABASE_URL =\s*"([^"]+)"/)?.[1];
+if (!local) throw new Error("DATABASE_URL is missing from src/croco/source.ts");
 
 const stateDir = path.join(root, ".wrangler");
 fs.mkdirSync(stateDir, { recursive: true });
 const localConfig = path.join(stateDir, "dev.jsonc");
+const config = JSON.parse(fs.readFileSync(path.join(root, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
 fs.writeFileSync(
 	localConfig,
 	JSON.stringify(
 		{
 			...config,
-			hyperdrive: [
-				{
-					binding: "HYPERDRIVE",
-					id: "00000000000000000000000000000001",
-					localConnectionString: local,
-				},
-			],
+			hyperdrive: [{ binding: "HYPERDRIVE", id: "00000000000000000000000000000001", localConnectionString: local }],
 		},
 		null,
 		2,
