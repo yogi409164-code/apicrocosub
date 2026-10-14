@@ -1,50 +1,60 @@
-import { ApiException, fromHono } from "chanfana";
+import { fromHono } from "chanfana";
 import { Hono } from "hono";
-import { tasksRouter } from "./endpoints/tasks/router";
-import { ContentfulStatusCode } from "hono/utils/http-status";
-import { DummyEndpoint } from "./endpoints/dummyEndpoint";
+import { cors } from "hono/cors";
+import { z } from "zod";
+import { crocoRoutes, registerCroco } from "./croco/app";
 
-// Start a Hono app
 const app = new Hono<{ Bindings: Env }>();
 
-app.onError((err, c) => {
-	if (err instanceof ApiException) {
-		// If it's a Chanfana ApiException, let Chanfana handle the response
-		return c.json(
-			{ success: false, errors: err.buildResponse() },
-			err.status as ContentfulStatusCode,
-		);
-	}
+app.use("*", cors());
 
-	console.error("Global error handler caught:", err); // Log the error if it's not known
-
-	// For other errors, return a generic 500 response
-	return c.json(
-		{
-			success: false,
-			errors: [{ code: 7000, message: "Internal Server Error" }],
-		},
-		500,
-	);
+// Payment routes already live under /api. Every other /api/* path maps back
+// onto the normal route, so /api/juices and /juices both work.
+app.use("/api/*", async (c, next) => {
+	const path = c.req.path;
+	if (path.startsWith("/api/create-order") || path.startsWith("/api/verify-payment")) return next();
+	const url = new URL(c.req.url);
+	url.pathname = path.slice(4) || "/";
+	return app.fetch(new Request(url.toString(), c.req.raw), c.env, c.executionCtx);
 });
 
-// Setup OpenAPI registry
+app.onError((err, c) => {
+	console.error("Global error handler caught:", err);
+	return c.json({ detail: "Internal Server Error" }, 500);
+});
+
+app.notFound((c) => c.json({ detail: "Not Found" }, 404));
+
 const openapi = fromHono(app, {
-	docs_url: "/",
+	docs_url: "/docs",
 	schema: {
 		info: {
-			title: "My Awesome API",
-			version: "2.0.0",
-			description: "This is the documentation for my awesome API.",
+			title: "Crocosip API",
+			version: "1.0.0",
+			description: "CrocoSip subscription API.",
 		},
 	},
 });
 
-// Register Tasks Sub router
-openapi.route("/tasks", tasksRouter);
+registerCroco(app);
 
-// Register other endpoints
-openapi.post("/dummy/:slug", DummyEndpoint);
+openapi.registry.registerComponent("securitySchemes", "bearerAuth", { type: "http", scheme: "bearer", bearerFormat: "JWT" });
 
-// Export the Hono app
+for (const route of crocoRoutes) {
+	const params = [...route.path.matchAll(/:(\w+)/g)].map((match) => match[1]);
+	openapi.registry.registerPath({
+		method: route.method,
+		path: route.path.replace(/:(\w+)/g, "{$1}"),
+		tags: [route.tag],
+		summary: route.summary,
+		security: route.auth ? [{ bearerAuth: [] }] : undefined,
+		request: {
+			params: params.length ? z.object(Object.fromEntries(params.map((name) => [name, z.string()]))) : undefined,
+			query: route.query.length ? z.object(Object.fromEntries(route.query.map((name) => [name, z.string().optional()]))) : undefined,
+			body: route.body ? { content: { "application/json": { schema: z.object({}).passthrough() } } } : undefined,
+		},
+		responses: { 200: { description: "OK" } },
+	});
+}
+
 export default app;

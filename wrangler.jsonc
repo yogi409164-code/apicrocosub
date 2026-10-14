@@ -6,11 +6,18 @@
 	"observability": {
 		"enabled": true
 	},
+	"assets": {
+		"directory": "./public"
+	},
 	"d1_databases": [
 		{
 			"binding": "DB",
 			"database_name": "crocosub",
 			"database_id": "0dd36c19-21cb-438a-8827-b97a0ec05b57"
 		}
-	]
+	],
+	"vars": {
+		"APP_NAME": "Crocosip API",
+		"DB_SCHEMA": "crocosub"
+	}
 }
