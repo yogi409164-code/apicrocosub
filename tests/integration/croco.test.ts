@@ -1,7 +1,10 @@
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 const base = "http://local.test";
+type Statement = { bind(...values: unknown[]): { run(): Promise<unknown> } };
+const bindings = env as unknown as { DB: { prepare(sql: string): Statement }; HYPERDRIVE?: unknown; DB_SCHEMA?: string };
+const onPostgres = Boolean(bindings.HYPERDRIVE);
 
 async function call(path: string, init: { method?: string; token?: string; body?: unknown } = {}) {
 	const headers: Record<string, string> = {};
@@ -27,7 +30,11 @@ const PNG =
 
 describe("Crocosip API", () => {
 	it("answers health and service info", async () => {
-		expect((await call("/health")).body).toMatchObject({ status: "ok", schema: "crocosub" });
+		expect((await call("/health")).body).toMatchObject({ status: "ok", schema: bindings.DB_SCHEMA ?? "Crocosip_mobile_app", database: onPostgres ? "postgresql" : "d1" });
+		const check = (await call("/db/check")).body;
+		expect(check).toMatchObject({ connected: true, dialect: onPostgres ? "postgresql" : "sqlite" });
+		expect(check.tables).toEqual(expect.arrayContaining(["users", "juices", "uploads", "upload_chunks"]));
+		expect(check.user_count).toBeGreaterThanOrEqual(2);
 		expect((await call("/")).body).toMatchObject({ docs: "/docs", api: "/api" });
 		expect((await call("/api/health")).status).toBe(200);
 	});
@@ -75,6 +82,7 @@ describe("Crocosip API", () => {
 		expect(located.status).toBe(200);
 
 		const juices = (await call("/juices")).body;
+		const ordersBefore = (await call("/orders/me", { token: demo })).body.length;
 		const order = await call("/orders", {
 			method: "POST",
 			token: demo,
@@ -82,7 +90,7 @@ describe("Crocosip API", () => {
 		});
 		expect(order.status).toBe(201);
 		expect(order.body.payment_method).toBe("COD");
-		expect((await call("/orders/me", { token: demo })).body.length).toBe(1);
+		expect((await call("/orders/me", { token: demo })).body.length).toBe(ordersBefore + 1);
 
 		const plan = (await call("/plans")).body[0];
 		const request = await call("/plans/requests", {
@@ -117,7 +125,16 @@ describe("Crocosip API", () => {
 		expect((await call("/admin/users", { token: demo })).status).toBe(403);
 	});
 
-	it("stores uploads in D1 and serves them back", async () => {
+	it.skipIf(onPostgres)("signs in users whose password FastAPI hashed", async () => {
+		const hash = "pbkdf2_sha256$00112233445566778899aabbccddeeff$f39ba92c20a7f6a5b006085f548086eab1269cd25caccca0e420f43aa8fc707a";
+		await bindings.DB.prepare("INSERT INTO users (id, username, name, password_hash, provider, role, special_access, created_at) VALUES ('py-user', 'pyuser', 'Py', ?, 'password', 'customer', FALSE, ?)")
+			.bind(hash, new Date().toISOString())
+			.run();
+		expect((await call("/auth/login", { method: "POST", body: { identifier: "pyuser", password: "Sip-Test-2026" } })).status).toBe(200);
+		expect((await call("/auth/login", { method: "POST", body: { identifier: "pyuser", password: "wrong-password" } })).status).toBe(401);
+	});
+
+	it("stores uploads in the database and serves them back", async () => {
 		const admin = await login("admin", "1234");
 		const uploaded = await call("/admin/juices/upload", { method: "POST", token: admin, body: { data_url: PNG } });
 		expect(uploaded.status).toBe(200);

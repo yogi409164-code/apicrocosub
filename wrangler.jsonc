@@ -1,5 +1,6 @@
 {
 	"compatibility_date": "2025-10-08",
+	"compatibility_flags": ["nodejs_compat"],
 	"main": "src/index.ts",
 	"name": "apicrocosub",
 	"upload_source_maps": true,
@@ -16,8 +17,29 @@
 			"database_id": "0dd36c19-21cb-438a-8827-b97a0ec05b57"
 		}
 	],
+	// PostgreSQL (shared with FastAPI) goes through Cloudflare Hyperdrive. Once this block is enabled the
+	// Worker uses PostgreSQL instead of D1. Create the config with caching off, then paste its id here:
+	//   npx wrangler hyperdrive create crocosip-db --caching-disabled --connection-string="postgres://doadmin:<password>@<POSTGRES_HOST>:25060/defaultdb?sslmode=require"
+	// For `wrangler dev`, set CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE to the same URL.
+	// "hyperdrive": [
+	// 	{
+	// 		"binding": "HYPERDRIVE",
+	// 		"id": "<hyperdrive-id>"
+	// 	}
+	// ],
+	// Secrets (SECRET_KEY, POSTGRES_PASSWORD, FAST2SMS_API_KEY, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
+	// live in .dev.vars for local runs and in `wrangler secret` for deploys.
 	"vars": {
 		"APP_NAME": "Crocosip API",
-		"DB_SCHEMA": "crocosub"
+		"POSTGRES_HOST": "dbaas-db-1025064-do-user-46253107-0.e.db.ondigitalocean.com",
+		"POSTGRES_PORT": "25060",
+		"POSTGRES_USER": "doadmin",
+		"POSTGRES_DB": "defaultdb",
+		"POSTGRES_SSLMODE": "require",
+		"DB_SCHEMA": "Crocosip_mobile_app",
+		"ACCESS_TOKEN_EXPIRE_MINUTES": "10080",
+		"GOOGLE_WEB_CLIENT_ID": "1028343714410-l4nab6f0io43tr73svdnd3i67lp5fk8g.apps.googleusercontent.com",
+		"GOOGLE_BROWSER_CLIENT_ID": "1028343714410-g6fg3lop4r0kte460sgnu3lq8h7gd1r1.apps.googleusercontent.com",
+		"GOOGLE_ANDROID_CLIENT_ID": "1028343714410-bravnjrjce1u6pt8jlrom7320qgdtqgd.apps.googleusercontent.com"
 	}
 }

@@ -3,6 +3,9 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import { crocoRoutes, registerCroco } from "./croco/app";
+import { PgDatabase } from "./croco/pg";
+
+type Bindings = Env & { HYPERDRIVE?: Hyperdrive; DB_SCHEMA?: string };
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -57,4 +60,16 @@ for (const route of crocoRoutes) {
 	});
 }
 
-export default app;
+// With a Hyperdrive binding the API reads and writes the shared PostgreSQL database
+// (the same one FastAPI uses). Without it, the D1 database stays in use.
+export default {
+	async fetch(request, env, ctx) {
+		if (!env.HYPERDRIVE) return app.fetch(request, env, ctx);
+		const db = new PgDatabase(env.HYPERDRIVE.connectionString, env.DB_SCHEMA?.trim() || "Crocosip_mobile_app");
+		try {
+			return await app.fetch(request, { ...env, DB: db as unknown as D1Database }, ctx);
+		} finally {
+			ctx.waitUntil(db.close());
+		}
+	},
+} satisfies ExportedHandler<Bindings>;

@@ -1,5 +1,6 @@
 import type { Context, Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { PgDatabase } from "./pg";
 
 type App = Hono<{ Bindings: Env }>;
 type Ctx = Context<{ Bindings: Env }>;
@@ -29,6 +30,7 @@ const ADMIN_PAGES = [
 	"tickets",
 	"delivery",
 	"data",
+	"database",
 	"maps",
 	"settings",
 ];
@@ -43,8 +45,8 @@ const MAX_SAVED_ADDRESSES = 10;
 const SPECIAL_ACCESS_METERS = 100;
 const OTP_MINUTES = 5;
 const RESEND_SECONDS = 30;
-// Workers Web Crypto rejects PBKDF2 above 100,000 iterations.
-const PBKDF2_ROUNDS = 100_000;
+// Same scheme as the FastAPI service (pbkdf2_sha256$salt$digest), so both accept each other's users.
+const PBKDF2_ROUNDS = 120_000;
 const IST_OFFSET_MS = 330 * 60_000;
 const STORE_ID = "default";
 const DEFAULT_LAT = 12.9716;
@@ -302,6 +304,11 @@ function queryNum(c: Ctx, field: string): number {
 
 // ---- database ----
 
+function postgresOf(db: D1Database): PgDatabase | null {
+	const value = db as unknown;
+	return value instanceof PgDatabase ? value : null;
+}
+
 function bindAll(statement: D1PreparedStatement, binds: unknown[]): D1PreparedStatement {
 	return binds.length ? statement.bind(...binds.map((value) => (value === undefined ? null : value))) : statement;
 }
@@ -345,13 +352,16 @@ async function pbkdf2(password: string, salt: string, rounds: number): Promise<s
 
 async function hashPassword(password: string): Promise<string> {
 	const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)).buffer);
-	return `pbkdf2_sha256$${PBKDF2_ROUNDS}$${salt}$${await pbkdf2(password, salt, PBKDF2_ROUNDS)}`;
+	return `pbkdf2_sha256$${salt}$${await pbkdf2(password, salt, PBKDF2_ROUNDS)}`;
 }
 
 async function verifyPassword(password: string, stored: string | null): Promise<boolean> {
 	if (!stored) return false;
 	const parts = stored.split("$");
-	if (parts.length !== 4 || parts[0] !== "pbkdf2_sha256") return false;
+	if (parts[0] !== "pbkdf2_sha256") return false;
+	if (parts.length === 3) return safeEqual(await pbkdf2(password, parts[1], PBKDF2_ROUNDS), parts[2]);
+	// Older Worker hashes carry their round count: pbkdf2_sha256$rounds$salt$digest.
+	if (parts.length !== 4) return false;
 	const rounds = Number(parts[1]);
 	if (!Number.isInteger(rounds) || rounds < 1 || rounds > PBKDF2_ROUNDS) return false;
 	return safeEqual(await pbkdf2(password, parts[2], rounds), parts[3]);
@@ -424,16 +434,18 @@ function ensureSeed(db: D1Database): Promise<void> {
 }
 
 async function seedAll(db: D1Database): Promise<void> {
+	const pg = postgresOf(db);
+	if (pg) await pg.setup();
 	await seedRoles(db);
 	if (!(await findUser(db, "demo"))) {
-		await run(db, "INSERT OR IGNORE INTO users (id, username, email, name, password_hash, provider, role, created_at) VALUES ('demo-user', 'demo', 'demo@crocosip.app', 'Demo', ?, 'password', 'customer', ?)", await hashPassword("Demo12345"), nowIso());
+		await run(db, "INSERT OR IGNORE INTO users (id, username, email, name, password_hash, provider, role, special_access, created_at) VALUES ('demo-user', 'demo', 'demo@crocosip.app', 'Demo', ?, 'password', 'customer', FALSE, ?)", await hashPassword("Demo12345"), nowIso());
 	}
 	if (!(await findUser(db, "admin"))) {
-		await run(db, "INSERT OR IGNORE INTO users (id, username, email, name, password_hash, provider, role, created_at) VALUES ('admin-user', 'admin', 'admin@crocosip.app', 'Admin', ?, 'password', 'admin', ?)", await hashPassword("1234"), nowIso());
+		await run(db, "INSERT OR IGNORE INTO users (id, username, email, name, password_hash, provider, role, special_access, created_at) VALUES ('admin-user', 'admin', 'admin@crocosip.app', 'Admin', ?, 'password', 'admin', FALSE, ?)", await hashPassword("1234"), nowIso());
 	}
 	await db.batch(
 		SALAD_MENU.map((row) =>
-			prep(db, "INSERT OR IGNORE INTO juices (id, name, category, sku, price, description, image_url, archived, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)", row.id, row.name, row.category, row.id, row.price, row.description, `/uploads/juices/salad-${row.image ?? row.id.replace(/^salad-/, "")}.png`, nowIso()),
+			prep(db, "INSERT OR IGNORE INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, FALSE, TRUE, 0, ?)", row.id, row.name, row.category, row.id, row.price, row.description, `/uploads/juices/salad-${row.image ?? row.id.replace(/^salad-/, "")}.png`, nowIso()),
 		),
 	);
 	await syncCategories(db);
@@ -701,7 +713,7 @@ function storeOut(row: Row) {
 async function storeRow(db: D1Database): Promise<Row> {
 	let row = await one(db, "SELECT * FROM store_settings WHERE id = ?", STORE_ID);
 	if (!row) {
-		await run(db, "INSERT OR IGNORE INTO store_settings (id, name, address, locality, latitude, longitude, distance_km) VALUES (?, 'CrocoSip Store', '', '', ?, ?, 10)", STORE_ID, DEFAULT_LAT, DEFAULT_LNG);
+		await run(db, "INSERT OR IGNORE INTO store_settings (id, name, address, locality, latitude, longitude, distance_km, custom_discount_percent, cart_min_order) VALUES (?, 'CrocoSip Store', '', '', ?, ?, 10, 20, 0)", STORE_ID, DEFAULT_LAT, DEFAULT_LNG);
 		row = (await one(db, "SELECT * FROM store_settings WHERE id = ?", STORE_ID))!;
 	}
 	return row;
@@ -1501,7 +1513,8 @@ export function registerCroco(app: App) {
 			await ensureSeed(c.env.DB);
 		} catch (error) {
 			console.error("Database seed failed:", error);
-			return c.json({ detail: "Database is not ready. Apply the D1 migrations, then try again." }, 503);
+			const hint = postgresOf(c.env.DB) ? "Check the Hyperdrive connection to PostgreSQL" : "Apply the D1 migrations";
+			return c.json({ detail: `Database is not ready. ${hint}, then try again.` }, 503);
 		}
 		await next();
 	});
@@ -1510,16 +1523,29 @@ export function registerCroco(app: App) {
 
 	// ---- health ----
 	route("get", "/", "health", "Service info", (c) => ({ service: setting(c.env, "APP_NAME", "Crocosip API"), docs: "/docs", api: "/api" }));
-	route("get", "/health", "health", "Health check", (c) => ({ status: "ok", service: setting(c.env, "APP_NAME", "Crocosip API"), schema: setting(c.env, "DB_SCHEMA", "crocosub") }));
+	route("get", "/health", "health", "Health check", (c) => ({
+		status: "ok",
+		service: setting(c.env, "APP_NAME", "Crocosip API"),
+		schema: setting(c.env, "DB_SCHEMA", "crocosub"),
+		database: postgresOf(c.env.DB) ? "postgresql" : "d1",
+	}));
 	route("post", "/db/setup", "health", "Create missing tables and seed data", async (c) => {
+		const pg = postgresOf(c.env.DB);
+		const created = pg ? await pg.setup() : [];
 		seeded = null;
 		await ensureSeed(c.env.DB);
-		return { created_tables: [], added_columns: [], errors: [] };
+		return { status: "ok", schema: setting(c.env, "DB_SCHEMA", "crocosub"), created_tables: created, added_columns: [], errors: [], tables: pg ? await pg.tables() : [] };
 	});
 	route("get", "/db/check", "health", "Check the database", async (c) => {
-		const tables = (await many(c.env.DB, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations' ORDER BY name")).map((row) => String(row.name));
-		const users = tables.includes("users") ? num((await one(c.env.DB, "SELECT COUNT(*) AS total FROM users"))?.total) : 0;
+		const pg = postgresOf(c.env.DB);
 		const schema = setting(c.env, "DB_SCHEMA", "crocosub");
+		const tables = pg
+			? await pg.tables()
+			: (await many(c.env.DB, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations' ORDER BY name")).map((row) => String(row.name));
+		const users = tables.includes("users") ? num((await one(c.env.DB, "SELECT COUNT(*) AS total FROM users"))?.total) : 0;
+		if (pg) {
+			return { status: tables.length ? "ok" : "missing_schema", connected: true, host: setting(c.env, "POSTGRES_HOST"), port: int(setting(c.env, "POSTGRES_PORT"), 5432), database: setting(c.env, "POSTGRES_DB"), schema, schema_exists: tables.length > 0, tables, user_count: users, dialect: "postgresql" };
+		}
 		return { status: "ok", connected: true, host: "cloudflare-d1", port: null, database: schema, schema, schema_exists: true, tables, user_count: users, dialect: "sqlite" };
 	});
 
@@ -1577,7 +1603,7 @@ export function registerCroco(app: App) {
 			const email = normalized.includes("@") ? normalized : null;
 			const fullName = name?.trim() || (email ? normalized.split("@")[0] : normalized);
 			const id = uuid();
-			await run(db, "INSERT INTO users (id, username, email, name, phone, password_hash, provider, role, created_at) VALUES (?, ?, ?, ?, ?, ?, 'password', 'customer', ?)", id, email ? null : normalized, email, fullName, cleanPhone, await hashPassword(password), nowIso());
+			await run(db, "INSERT INTO users (id, username, email, name, phone, password_hash, provider, role, special_access, created_at) VALUES (?, ?, ?, ?, ?, ?, 'password', 'customer', FALSE, ?)", id, email ? null : normalized, email, fullName, cleanPhone, await hashPassword(password), nowIso());
 			return authResponse(c, (await userById(db, id))!);
 		},
 		{ status: 201 },
@@ -1608,7 +1634,7 @@ export function registerCroco(app: App) {
 		try {
 			if (!user) {
 				const id = uuid();
-				await run(db, "INSERT INTO users (id, email, name, photo, google_id, provider, role, created_at) VALUES (?, ?, ?, ?, ?, 'google', 'customer', ?)", id, email ? email.toLowerCase() : null, name, photo, googleId, nowIso());
+				await run(db, "INSERT INTO users (id, email, name, photo, google_id, provider, role, special_access, created_at) VALUES (?, ?, ?, ?, ?, 'google', 'customer', FALSE, ?)", id, email ? email.toLowerCase() : null, name, photo, googleId, nowIso());
 				user = (await userById(db, id))!;
 			} else {
 				await run(db, "UPDATE users SET google_id = ?, provider = 'google', email = COALESCE(?, email), name = COALESCE(?, name), photo = COALESCE(?, photo) WHERE id = ?", googleId, email ? email.toLowerCase() : null, name || null, photo, user.id);
@@ -1907,8 +1933,8 @@ export function registerCroco(app: App) {
 				prep(db, "UPDATE plan_requests SET status = 'cancelled', decided_at = ? WHERE user_id = ? AND status = 'pending'", nowIso(), user.id),
 				prep(
 					db,
-					`INSERT INTO plan_requests (id, user_id, plan_id, plan_name, price, period, bottles, details, days, items, upgrade_mode, starts_on, delivery_lat, delivery_lng, delivery_address, delivery_locality, status, created_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+					`INSERT INTO plan_requests (id, user_id, plan_id, plan_name, price, period, bottles, details, days, items, upgrade_mode, starts_on, skipped_dates, item_swaps, slot_order, delivery_lat, delivery_lng, delivery_address, delivery_locality, status, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '{}', '[]', ?, ?, ?, ?, 'pending', ?)`,
 					id,
 					user.id,
 					planId,
@@ -2063,7 +2089,7 @@ export function registerCroco(app: App) {
 			const id = uuidHex();
 			const received = reasonText ? `Issue received: ${reasonText}.` : "Issue received.";
 			await db.batch([
-				prep(db, "INSERT INTO support_tickets (id, user_id, kind, order_id, plan_request_id, subject, message, reason, status, started, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)", id, user.id, kind, savedOrderId, savedPlanId, subject, textBody, reasonText || null, nowIso()),
+				prep(db, "INSERT INTO support_tickets (id, user_id, kind, order_id, plan_request_id, subject, message, reason, status, started, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', FALSE, ?)", id, user.id, kind, savedOrderId, savedPlanId, subject, textBody, reasonText || null, nowIso()),
 				prep(db, "INSERT INTO support_messages (id, ticket_id, sender, sender_name, body, created_at) VALUES (?, ?, 'customer', ?, ?, ?)", uuidHex(), id, personName(user) || "Customer", textBody, nowIso()),
 				systemMessage(db, id, `${received} A support person will join shortly.`),
 			]);
@@ -2448,7 +2474,7 @@ export function registerCroco(app: App) {
 			const id = uuid();
 			await run(
 				db,
-				"INSERT INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, ml, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+				"INSERT INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, ml, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?)",
 				id,
 				name,
 				category,
@@ -2828,7 +2854,7 @@ export function registerCroco(app: App) {
 			if (!(await pagesFor(db, person)).length) throw new HttpError(400, "Choose a support person.");
 			const name = personName(person) || "Support";
 			await db.batch([
-				prep(db, "UPDATE support_tickets SET assignee_id = ?, assignee_name = ?, started = 1, status = 'open' WHERE id = ?", person.id, name, ticket.id),
+				prep(db, "UPDATE support_tickets SET assignee_id = ?, assignee_name = ?, started = TRUE, status = 'open' WHERE id = ?", person.id, name, ticket.id),
 				systemMessage(db, ticket.id, `${name} joined the chat`),
 			]);
 			const updated = await getTicket(db, String(ticket.id));
