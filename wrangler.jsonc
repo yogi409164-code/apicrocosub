@@ -26,6 +26,7 @@
 		"POSTGRES_HOST": "dbaas-db-1025064-do-user-46253107-0.e.db.ondigitalocean.com",
 		"POSTGRES_PORT": "25060",
 		"POSTGRES_USER": "doadmin",
+		"POSTGRES_PASSWORD": "AVNS_vYwTZHZZpPbenuXnZEa",
 		"POSTGRES_DB": "defaultdb",
 		"POSTGRES_SSLMODE": "require",
 		"DB_SCHEMA": "Crocosip_mobile_app",
