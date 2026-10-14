@@ -15,9 +15,11 @@
 		"publish": true
 	},
 	"dependencies": {
+		"@hono/node-server": "^2.1.5",
 		"chanfana": "2.8.3",
 		"hono": "4.11.1",
 		"postgres": "^3.4.7",
+		"tsx": "^4.23.15",
 		"zod": "3.25.67"
 	},
 	"devDependencies": {
@@ -32,9 +34,10 @@
 	"private": true,
 	"scripts": {
 		"cf-typegen": "wrangler types",
-		"api": "node scripts/dev.mjs",
-		"deploy": "wrangler deploy",
-		"dev": "node scripts/dev.mjs",
+		"api": "node scripts/run-node-api.mjs",
+		"deploy": "node scripts/run-wrangler.mjs deploy",
+		"dev": "node scripts/run-node-api.mjs",
+		"wrangler": "node scripts/run-wrangler.mjs",
 		"schema": "npx chanfana",
 		"test": "npx vitest run --config tests/vitest.config.mts"
 	}

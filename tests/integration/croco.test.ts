@@ -3,8 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const base = "http://local.test";
 type Statement = { bind(...values: unknown[]): { run(): Promise<unknown> } };
-type PgBinding = { connectionString: string };
-const bindings = env as unknown as { DB: { prepare(sql: string): Statement }; HYPERDRIVE?: PgBinding; TEST_TARGET_PG?: PgBinding; DB_SCHEMA?: string };
+const bindings = env as unknown as { DB: { prepare(sql: string): Statement }; DB_SCHEMA?: string };
 const onPostgres = true;
 
 async function call(path: string, init: { method?: string; token?: string; body?: unknown } = {}) {

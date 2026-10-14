@@ -1,7 +1,6 @@
 import type { Context, Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { PgDatabase } from "./pg";
-import { DATABASE_URL, DB_SCHEMA } from "./source";
+import { DB_SCHEMA, PgDatabase } from "./pg";
 
 type App = Hono<{ Bindings: Env }>;
 type Ctx = Context<{ Bindings: Env }>;
@@ -1513,8 +1512,8 @@ export function registerCroco(app: App) {
 			await ensureSeed(c.env.DB);
 		} catch (error) {
 			console.error("Database seed failed:", error);
-			const hint = "Check DATABASE_URL in src/croco/source.ts";
-			return c.json({ detail: `Database is not ready. ${hint}, then try again.` }, 503);
+			const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
+			return c.json({ detail: `Database is not ready. ${reason}` }, 503);
 		}
 		await next();
 	});
@@ -1539,10 +1538,20 @@ export function registerCroco(app: App) {
 	route("get", "/db/check", "health", "Check the database", async (c) => {
 		const pg = postgresOf(c.env.DB);
 		const schema = setting(c.env, "DB_SCHEMA", DB_SCHEMA);
-		const info = new URL(DATABASE_URL);
 		const tables = pg ? await pg.tables() : [];
 		const users = tables.includes("users") ? num((await one(c.env.DB, "SELECT COUNT(*) AS total FROM users"))?.total) : 0;
-		return { status: tables.length ? "ok" : "missing_schema", connected: true, host: info.hostname, port: Number(info.port || 5432), database: decodeURIComponent(info.pathname.slice(1)), schema, schema_exists: tables.length > 0, tables, user_count: users, dialect: "postgresql" };
+		return {
+			status: tables.length ? "ok" : "missing_schema",
+			connected: true,
+			host: setting(c.env, "POSTGRES_HOST"),
+			port: int(setting(c.env, "POSTGRES_PORT"), 25060),
+			database: setting(c.env, "POSTGRES_DB"),
+			schema,
+			schema_exists: tables.length > 0,
+			tables,
+			user_count: users,
+			dialect: "postgresql",
+		};
 	});
 
 	// ---- catalog ----

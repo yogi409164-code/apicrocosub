@@ -1,5 +1,17 @@
 import postgres from "postgres";
 
+export const DB_SCHEMA = "Crocosip_mobile_app";
+
+export type PostgresEnv = {
+	POSTGRES_HOST?: string;
+	POSTGRES_PORT?: string;
+	POSTGRES_USER?: string;
+	POSTGRES_PASSWORD?: string;
+	POSTGRES_DB?: string;
+	POSTGRES_SSLMODE?: string;
+	DATABASE_URL?: string;
+};
+
 type Row = Record<string, unknown>;
 type Sql = postgres.Sql | postgres.TransactionSql;
 type Result<T> = { results: T[]; success: true; meta: Record<string, never> };
@@ -91,16 +103,38 @@ class PgStatement {
 	}
 }
 
+function connectPostgres(env: PostgresEnv): postgres.Sql {
+	const url = env.DATABASE_URL?.trim();
+	if (url?.startsWith("postgresql")) {
+		return postgres(url, { max: 5, fetch_types: false, prepare: false, ssl: { rejectUnauthorized: false }, onnotice: () => undefined });
+	}
+	const host = env.POSTGRES_HOST?.trim();
+	const password = env.POSTGRES_PASSWORD ?? "";
+	if (!host || !password) {
+		throw new Error("PostgreSQL is not configured. Set POSTGRES_HOST and POSTGRES_PASSWORD in .dev.vars / wrangler vars, same as apis/.env.");
+	}
+	const sslmode = env.POSTGRES_SSLMODE?.trim() || "require";
+	return postgres({
+		host,
+		port: Number(env.POSTGRES_PORT || 25060),
+		database: env.POSTGRES_DB?.trim() || "defaultdb",
+		username: env.POSTGRES_USER?.trim() || "doadmin",
+		password,
+		ssl: sslmode === "disable" ? false : { rejectUnauthorized: false },
+		max: 5,
+		fetch_types: false,
+		prepare: false,
+		onnotice: () => undefined,
+	});
+}
+
 /** D1-shaped access to PostgreSQL. Tables are schema-qualified in every statement. */
 export class PgDatabase {
 	readonly dialect = "postgresql";
 	private readonly sql: postgres.Sql;
 
-	constructor(
-		connectionString: string,
-		readonly schema: string,
-	) {
-		this.sql = postgres(connectionString, { max: 5, fetch_types: false, prepare: false, onnotice: () => undefined });
+	constructor(env: PostgresEnv, readonly schema: string) {
+		this.sql = connectPostgres(env);
 	}
 
 	prepare(query: string): PgStatement {

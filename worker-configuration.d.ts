@@ -3,8 +3,14 @@
 // Runtime types generated with workerd@1.20260921.1 2025-10-08 
 interface __BaseEnv_Env {
 	DB: D1Database;
-	HYPERDRIVE?: Hyperdrive;
 	DB_SCHEMA?: string;
+	POSTGRES_HOST?: string;
+	POSTGRES_PORT?: string;
+	POSTGRES_USER?: string;
+	POSTGRES_PASSWORD?: string;
+	POSTGRES_DB?: string;
+	POSTGRES_SSLMODE?: string;
+	DATABASE_URL?: string;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {

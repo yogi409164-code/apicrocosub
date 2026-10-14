@@ -1,11 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const pgSchema = process.env.CROCO_PG_SCHEMA ?? "crocosip_worker_test";
-const source = fs.readFileSync(path.join(__dirname, "..", "src/croco/source.ts"), "utf8");
-const pgUrl = source.match(/export const DATABASE_URL =\s*"([^"]+)"/)?.[1] ?? "";
 
 export default defineConfig({
 	plugins: [
@@ -18,7 +14,6 @@ export default defineConfig({
 				bindings: {
 					DB_SCHEMA: pgSchema,
 				},
-				hyperdrives: { HYPERDRIVE: pgUrl },
 			},
 		}),
 	],
