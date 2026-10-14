@@ -36,6 +36,7 @@
 		"cf-typegen": "wrangler types",
 		"api": "node scripts/run-node-api.mjs",
 		"deploy": "node scripts/run-wrangler.mjs deploy",
+		"setup:db": "node scripts/setup-cloudflare-db.mjs",
 		"dev": "node scripts/run-node-api.mjs",
 		"wrangler": "node scripts/run-wrangler.mjs",
 		"schema": "npx chanfana",

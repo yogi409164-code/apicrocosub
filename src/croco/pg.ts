@@ -10,6 +10,7 @@ export type PostgresEnv = {
 	POSTGRES_DB?: string;
 	POSTGRES_SSLMODE?: string;
 	DATABASE_URL?: string;
+	HYPERDRIVE?: { connectionString: string };
 };
 
 type Row = Record<string, unknown>;
@@ -104,6 +105,10 @@ class PgStatement {
 }
 
 function connectPostgres(env: PostgresEnv): postgres.Sql {
+	const hyperdrive = env.HYPERDRIVE?.connectionString?.trim();
+	if (hyperdrive) {
+		return postgres(hyperdrive, { max: 5, fetch_types: false, prepare: false, onnotice: () => undefined });
+	}
 	const url = env.DATABASE_URL?.trim();
 	if (url?.startsWith("postgresql")) {
 		return postgres(url, { max: 5, fetch_types: false, prepare: false, ssl: { rejectUnauthorized: false }, onnotice: () => undefined });

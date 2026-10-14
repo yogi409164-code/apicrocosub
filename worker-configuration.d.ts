@@ -11,6 +11,7 @@ interface __BaseEnv_Env {
 	POSTGRES_DB?: string;
 	POSTGRES_SSLMODE?: string;
 	DATABASE_URL?: string;
+	HYPERDRIVE?: Hyperdrive;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
