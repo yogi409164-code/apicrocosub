@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const NAME = "crocosip-db";
+const CA_NAME = "crocosip-do-ca";
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const wranglerJs = path.join(root, "node_modules/wrangler/bin/wrangler.js");
 
 function passwordFromSource() {
 	const source = fs.readFileSync(path.join(root, "src/croco/source.ts"), "utf8");
@@ -23,27 +25,46 @@ function redact(text, password) {
 }
 
 function wrangler(args, password) {
-	const result = spawnSync("npx", ["wrangler", ...args], {
+	const result = spawnSync(process.execPath, [wranglerJs, ...args], {
 		cwd: root,
 		encoding: "utf8",
-		shell: true,
 		env: process.env,
 	});
 	const out = redact(`${result.stdout || ""}\n${result.stderr || ""}`, password);
 	return { status: result.status ?? 1, out };
 }
 
-function existingId(password) {
-	const listed = wrangler(["hyperdrive", "list"], password);
-	const named = listed.out.split(/\r?\n/).find((line) => line.includes(NAME));
-	const fromName = named?.match(UUID)?.[0];
-	if (fromName) return fromName;
-	const configured = wranglerConfig().hyperdrive?.[0]?.id;
-	if (configured && UUID.test(configured) && !configured.startsWith("00000000")) return configured;
-	return null;
+function requireOk(step, result) {
+	if (result.status === 0) return result;
+	console.error(result.out.trim() || `(no output from ${step})`);
+	throw new Error(`${step} failed`);
 }
 
-function createId(config, password) {
+function namedId(output, name) {
+	const line = output.split(/\r?\n/).find((row) => row.includes(name));
+	return line?.match(UUID)?.[0] ?? null;
+}
+
+function ensureCa(password) {
+	const listed = wrangler(["cert", "list"], password);
+	console.log(listed.out.trim());
+	const existing = namedId(listed.out, CA_NAME);
+	if (existing) return existing;
+	const uploaded = requireOk(
+		"wrangler cert upload",
+		wrangler(["cert", "upload", "certificate-authority", "--ca-cert", "certs/digitalocean-ca.pem", "--name", CA_NAME], password),
+	);
+	console.log(uploaded.out.trim());
+	const id = uploaded.out.match(UUID)?.[0] || namedId(wrangler(["cert", "list"], password).out, CA_NAME);
+	if (!id) throw new Error("CA certificate uploaded but no id was returned");
+	return id;
+}
+
+function ensureHyperdrive(config, password, caId) {
+	const listed = wrangler(["hyperdrive", "list"], password);
+	console.log(listed.out.trim());
+	const existing = namedId(listed.out, NAME);
+	if (existing) return existing;
 	const created = wrangler(
 		[
 			"hyperdrive",
@@ -51,7 +72,9 @@ function createId(config, password) {
 			NAME,
 			"--caching-disabled",
 			"--sslmode",
-			"require",
+			"verify-full",
+			"--ca-certificate-id",
+			caId,
 			"--origin-scheme",
 			"postgresql",
 			"--host",
@@ -69,14 +92,14 @@ function createId(config, password) {
 		],
 		password,
 	);
-	const id = created.out.match(UUID)?.[0];
-	if (created.status === 0 && id) return id;
-	const again = existingId(password);
-	if (again) return again;
-	console.error(created.out.trim());
-	throw new Error(
-		"Could not create Hyperdrive. The Cloudflare build token needs Hyperdrive edit permission, and DigitalOcean Trusted Sources must allow Cloudflare.",
-	);
+	console.log(created.out.trim());
+	const id = created.status === 0 ? created.out.match(UUID)?.[0] : namedId(wrangler(["hyperdrive", "list"], password).out, NAME);
+	if (!id) {
+		throw new Error(
+			"Could not create Hyperdrive. Grant the apicrocosub build token Hyperdrive and Certificate edit, and allow Cloudflare in DigitalOcean Trusted Sources.",
+		);
+	}
+	return id;
 }
 
 function writeHyperdriveId(id) {
@@ -88,7 +111,9 @@ function writeHyperdriveId(id) {
 
 const password = passwordFromSource();
 const config = wranglerConfig();
-const id = existingId(password) || createId(config, password);
+const caId = ensureCa(password);
+console.log(`Using CA ${CA_NAME} (${caId})`);
+const id = ensureHyperdrive(config, password, caId);
 console.log(`Using Hyperdrive ${NAME} (${id})`);
 writeHyperdriveId(id);
 
