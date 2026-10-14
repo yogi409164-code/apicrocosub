@@ -32,8 +32,9 @@
 	"private": true,
 	"scripts": {
 		"cf-typegen": "wrangler types",
+		"api": "node scripts/dev.mjs",
 		"deploy": "wrangler deploy",
-		"dev": "wrangler dev",
+		"dev": "node scripts/dev.mjs",
 		"schema": "npx chanfana",
 		"test": "npx vitest run --config tests/vitest.config.mts"
 	}

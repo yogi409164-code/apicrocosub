@@ -10,15 +10,14 @@
 	"assets": {
 		"directory": "./public"
 	},
-	// Production Workers reach DigitalOcean through Hyperdrive (required for TLS). Create it with Node 22:
-	//   npx wrangler hyperdrive create crocosip-db --caching-disabled --connection-string="postgres://doadmin:<password>@<POSTGRES_HOST>:25060/defaultdb?sslmode=require"
-	// Then uncomment this block and paste the id. Local tests bind Hyperdrive from .dev.vars.
-	// "hyperdrive": [
-	// 	{
-	// 		"binding": "HYPERDRIVE",
-	// 		"id": "<hyperdrive-id>"
-	// 	}
-	// ],
+	// Local wrangler uses this binding plus CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE
+	// from `npm run api`. Replace the id with a real Hyperdrive config before production deploy.
+	"hyperdrive": [
+		{
+			"binding": "HYPERDRIVE",
+			"id": "00000000000000000000000000000001"
+		}
+	],
 	// Secrets (SECRET_KEY, POSTGRES_PASSWORD, FAST2SMS_API_KEY, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
 	// live in .dev.vars for local runs and in `wrangler secret` for deploys.
 	"vars": {
