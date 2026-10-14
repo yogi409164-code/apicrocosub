@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 
 const base = "http://local.test";
 type Statement = { bind(...values: unknown[]): { run(): Promise<unknown> } };
-const bindings = env as unknown as { DB: { prepare(sql: string): Statement }; HYPERDRIVE?: unknown; DB_SCHEMA?: string };
+type PgBinding = { connectionString: string };
+const bindings = env as unknown as { DB: { prepare(sql: string): Statement }; HYPERDRIVE?: PgBinding; TEST_TARGET_PG?: PgBinding; DB_SCHEMA?: string };
 const onPostgres = Boolean(bindings.HYPERDRIVE);
 
 async function call(path: string, init: { method?: string; token?: string; body?: unknown } = {}) {
@@ -132,6 +133,48 @@ describe("Crocosip API", () => {
 			.run();
 		expect((await call("/auth/login", { method: "POST", body: { identifier: "pyuser", password: "Sip-Test-2026" } })).status).toBe(200);
 		expect((await call("/auth/login", { method: "POST", body: { identifier: "pyuser", password: "wrong-password" } })).status).toBe(401);
+	});
+
+	it("shows the database page and copies all data to another PostgreSQL schema", async () => {
+		const admin = await login("admin", "1234");
+		const demo = await login("demo", "Demo12345");
+		const details = await call("/admin/database", { token: admin });
+		expect(details.status).toBe(200);
+		expect(details.body).toMatchObject({ connected: true, engine: onPostgres ? "PostgreSQL (Hyperdrive)" : "Cloudflare D1", error: null });
+		expect(details.body.tables.find((table: { name: string }) => table.name === "users").rows).toBeGreaterThanOrEqual(2);
+		expect((await call("/admin/database")).status).toBe(401);
+		expect((await call("/admin/database", { token: demo })).status).toBe(403);
+		const invalid = await call("/admin/database/test", { method: "POST", token: admin, body: { host: "h", database: "d", user: "u", schema_name: "1bad" } });
+		expect(invalid.status).toBe(422);
+		expect(invalid.body.detail[0].loc).toEqual(["body", "schema_name"]);
+
+		const binding = bindings.HYPERDRIVE ?? bindings.TEST_TARGET_PG;
+		if (!binding) return;
+		const url = new URL(binding.connectionString);
+		const target = {
+			host: url.hostname,
+			port: Number(url.port || 5432),
+			database: decodeURIComponent(url.pathname.slice(1)),
+			user: decodeURIComponent(url.username),
+			password: decodeURIComponent(url.password),
+			sslmode: "disable",
+			schema_name: "crocosip_worker_transfer_test",
+		};
+		const tested = await call("/admin/database/test", { method: "POST", token: admin, body: target });
+		expect(tested.status).toBe(200);
+		expect(tested.body).toMatchObject({ connected: true, same_as_current: false });
+
+		const replaced = await call("/admin/database/transfer", { method: "POST", token: admin, body: { ...target, replace: true } });
+		expect(replaced.status).toBe(200);
+		expect(replaced.body.status).toBe("ok");
+		expect(replaced.body.tables.find((table: { name: string }) => table.name === "users").rows).toBeGreaterThanOrEqual(2);
+		const refused = await call("/admin/database/transfer", { method: "POST", token: admin, body: target });
+		expect(refused.status).toBe(400);
+		expect(refused.body.detail).toContain("Replace existing data");
+
+		const after = await call("/admin/database/test", { method: "POST", token: admin, body: target });
+		expect(after.body.schema_exists).toBe(true);
+		expect(after.body.total_rows).toBe(replaced.body.total_rows);
 	});
 
 	it("stores uploads in the database and serves them back", async () => {

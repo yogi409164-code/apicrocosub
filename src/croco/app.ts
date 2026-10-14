@@ -1,6 +1,6 @@
 import type { Context, Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { PgDatabase } from "./pg";
+import { APP_TABLES, checkReachable, clearTable, connectTarget, countTables, createSchema, insertRows, PgDatabase, type PgTarget, type TableCount } from "./pg";
 
 type App = Hono<{ Bindings: Env }>;
 type Ctx = Context<{ Bindings: Env }>;
@@ -1481,6 +1481,197 @@ async function refundTimeline(env: Env, paymentId: string) {
 	};
 }
 
+// ---- admin database page ----
+
+const SSL_MODES = ["", "disable", "allow", "prefer", "require", "verify-ca", "verify-full"];
+const SCHEMA_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const TABLE_KEYS: Record<string, string> = { roles: "name", juice_categories: "name", phone_otps: "phone", uploads: "path", upload_chunks: "path, idx" };
+
+async function databaseAdmin(c: Ctx): Promise<Row> {
+	const user = await currentUser(c);
+	if (!(await pagesFor(c.env.DB, user)).includes("database")) throw new HttpError(403, "Admin access required.");
+	return user;
+}
+
+function readTarget(body: Body): PgTarget {
+	const host = reqStr(body, "host", 1, 255);
+	const port = optNum(body, "port", { ge: 1, le: 65535, integer: true, fallback: 5432 }) ?? 5432;
+	const database = reqStr(body, "database", 1, 120);
+	const user = reqStr(body, "user", 1, 120);
+	const password = optStr(body, "password", 500, "") ?? "";
+	const sslmode = literal(body, "sslmode", SSL_MODES, "require");
+	const schema = reqStr(body, "schema_name", 1, 63);
+	if (!SCHEMA_NAME.test(schema)) invalid("schema_name", `String should match pattern '${SCHEMA_NAME.source}'`, schema);
+	return { host, port, database, user, password, sslmode, schema };
+}
+
+function dbMessage(error: unknown): string {
+	const message = String(error instanceof Error ? error.message : error).split("\n")[0].trim() || "Unknown error";
+	if (/internal error|stream was cancelled|certificate|tls/i.test(message)) {
+		return `${message}. Cloudflare Workers only connect to databases with a publicly trusted TLS certificate; reach other servers through Hyperdrive or the FastAPI service`;
+	}
+	return message;
+}
+
+function totalRows(tables: TableCount[]): number {
+	return tables.reduce((sum, table) => sum + (table.rows ?? 0), 0);
+}
+
+function sizeLabel(bytes: unknown): string | null {
+	const size = num(bytes, -1);
+	if (size < 0) return null;
+	if (size < 10 * 1024) return `${size} bytes`;
+	if (size < 10 * 1024 * 1024) return `${Math.round(size / 1024)} kB`;
+	return `${Math.round(size / (1024 * 1024))} MB`;
+}
+
+async function sourceTables(db: D1Database): Promise<string[]> {
+	const pg = postgresOf(db);
+	if (pg) return pg.tables();
+	return (await many(db, "SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => String(row.name));
+}
+
+async function localCounts(db: D1Database): Promise<TableCount[]> {
+	const existing = await sourceTables(db);
+	const counts: TableCount[] = [];
+	for (const name of APP_TABLES) {
+		counts.push({ name, rows: existing.includes(name) ? num((await one(db, `SELECT COUNT(*) AS total FROM ${name}`))?.total) : null });
+	}
+	return counts;
+}
+
+async function databaseDetails(env: Env) {
+	const db = env.DB;
+	const pg = postgresOf(db);
+	const schema = setting(env, "DB_SCHEMA", "crocosub");
+	const details = {
+		engine: pg ? "PostgreSQL (Hyperdrive)" : "Cloudflare D1",
+		host: pg ? setting(env, "POSTGRES_HOST") : "Cloudflare",
+		port: pg ? int(setting(env, "POSTGRES_PORT"), 5432) : 0,
+		database: pg ? setting(env, "POSTGRES_DB") : setting(env, "D1_DATABASE_NAME", "crocosub"),
+		user: pg ? setting(env, "POSTGRES_USER") : "",
+		schema,
+		sslmode: pg ? setting(env, "POSTGRES_SSLMODE") : "",
+		connected: false,
+		server_version: null as string | null,
+		size: null as string | null,
+		tables: [] as TableCount[],
+		total_rows: 0,
+		error: null as string | null,
+	};
+	try {
+		if (pg) {
+			details.server_version = text((await one(db, "SHOW server_version"))?.server_version);
+			details.size = text((await one(db, "SELECT pg_size_pretty(pg_database_size(current_database())) AS size"))?.size);
+		} else {
+			const version = await one(db, "SELECT sqlite_version() AS version").catch(() => null);
+			details.server_version = version ? `SQLite ${text(version.version)}` : null;
+			details.size = sizeLabel((await db.prepare("SELECT 1").run()).meta.size_after);
+		}
+		details.tables = await localCounts(db);
+		details.connected = true;
+	} catch (error) {
+		details.error = dbMessage(error);
+	}
+	details.total_rows = totalRows(details.tables);
+	return details;
+}
+
+function isCurrentDatabase(env: Env, target: PgTarget): boolean {
+	if (!postgresOf(env.DB)) return false;
+	return (
+		target.host.trim().toLowerCase() === setting(env, "POSTGRES_HOST").toLowerCase() &&
+		target.port === int(setting(env, "POSTGRES_PORT"), 5432) &&
+		target.database.trim() === setting(env, "POSTGRES_DB") &&
+		target.schema === setting(env, "DB_SCHEMA", "crocosub")
+	);
+}
+
+async function reachTarget(target: PgTarget): Promise<void> {
+	try {
+		await checkReachable(target);
+	} catch (error) {
+		throw new HttpError(400, `Could not connect: ${dbMessage(error)}`);
+	}
+}
+
+async function testDatabase(c: Ctx, target: PgTarget) {
+	await reachTarget(target);
+	const sql = connectTarget(target);
+	try {
+		const [version] = await sql.unsafe("SHOW server_version");
+		const [found] = await sql.unsafe("SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = $1) AS present", [target.schema]);
+		const schemaExists = found?.present === true;
+		const tables = schemaExists ? await countTables(sql, target.schema) : [];
+		return {
+			connected: true,
+			host: target.host.trim(),
+			database: target.database.trim(),
+			schema: target.schema,
+			server_version: text(version?.server_version),
+			schema_exists: schemaExists,
+			same_as_current: isCurrentDatabase(c.env, target),
+			tables,
+			total_rows: totalRows(tables),
+		};
+	} catch (error) {
+		throw new HttpError(400, `Could not connect: ${dbMessage(error)}`);
+	} finally {
+		c.executionCtx.waitUntil(sql.end({ timeout: 5 }).catch(() => undefined));
+	}
+}
+
+/** Copies every app table into the target in one transaction, so a failure leaves it unchanged. */
+async function transferDatabase(c: Ctx, target: PgTarget, replace: boolean) {
+	if (isCurrentDatabase(c.env, target)) throw new HttpError(400, "That is the current database. Enter a different database or schema.");
+	const started = Date.now();
+	const db = c.env.DB;
+	const available = await sourceTables(db);
+	await reachTarget(target);
+	const sql = connectTarget(target);
+	try {
+		const copied = (await sql.begin(async (tx) => {
+			await createSchema(tx, target.schema);
+			const existing = await countTables(tx, target.schema);
+			if (existing.some((table) => (table.rows ?? 0) > 0) && !replace) {
+				throw new HttpError(400, "The new database already has CrocoSip data. Turn on Replace existing data to overwrite it.");
+			}
+			if (replace) {
+				for (const table of [...APP_TABLES].reverse()) await clearTable(tx, target.schema, table);
+			}
+			const result: TableCount[] = [];
+			for (const table of APP_TABLES) {
+				let count = 0;
+				if (available.includes(table)) {
+					const size = table === "upload_chunks" ? 4 : 500;
+					for (;;) {
+						const rows = await many(db, `SELECT * FROM ${table} ORDER BY ${TABLE_KEYS[table] ?? "id"} LIMIT ? OFFSET ?`, size, count);
+						await insertRows(tx, target.schema, table, rows);
+						count += rows.length;
+						if (rows.length < size) break;
+					}
+				}
+				result.push({ name: table, rows: count });
+			}
+			return result;
+		})) as TableCount[];
+		return {
+			status: "ok",
+			host: target.host.trim(),
+			database: target.database.trim(),
+			schema: target.schema,
+			tables: copied,
+			total_rows: totalRows(copied),
+			seconds: Math.round((Date.now() - started) / 100) / 10,
+		};
+	} catch (error) {
+		if (error instanceof HttpError) throw error;
+		throw new HttpError(400, `Transfer stopped and nothing was saved: ${dbMessage(error)}`);
+	} finally {
+		c.executionCtx.waitUntil(sql.end({ timeout: 5 }).catch(() => undefined));
+	}
+}
+
 // ---- routes ----
 
 type RouteOptions = { auth?: boolean; query?: string[]; status?: number };
@@ -2878,5 +3069,24 @@ export function registerCroco(app: App) {
 		} catch (error) {
 			notFoundOr400(error);
 		}
+	}, { auth: true });
+
+	// ---- admin: database ----
+	route("get", "/admin/database", "admin", "Current database details", async (c) => {
+		await databaseAdmin(c);
+		return databaseDetails(c.env);
+	}, { auth: true });
+
+	route("post", "/admin/database/test", "admin", "Test another PostgreSQL database", async (c) => {
+		await databaseAdmin(c);
+		return testDatabase(c, readTarget(await bodyOf(c)));
+	}, { auth: true });
+
+	route("post", "/admin/database/transfer", "admin", "Copy all data to another PostgreSQL database", async (c) => {
+		await databaseAdmin(c);
+		const body = await bodyOf(c);
+		const target = readTarget(body);
+		const replace = optBool(body, "replace") ?? false;
+		return transferDatabase(c, target, replace);
 	}, { auth: true });
 }
