@@ -10,17 +10,9 @@
 	"assets": {
 		"directory": "./public"
 	},
-	"d1_databases": [
-		{
-			"binding": "DB",
-			"database_name": "crocosub",
-			"database_id": "0dd36c19-21cb-438a-8827-b97a0ec05b57"
-		}
-	],
-	// PostgreSQL (shared with FastAPI) goes through Cloudflare Hyperdrive. Once this block is enabled the
-	// Worker uses PostgreSQL instead of D1. Create the config with caching off, then paste its id here:
+	// Production Workers reach DigitalOcean through Hyperdrive (required for TLS). Create it with Node 22:
 	//   npx wrangler hyperdrive create crocosip-db --caching-disabled --connection-string="postgres://doadmin:<password>@<POSTGRES_HOST>:25060/defaultdb?sslmode=require"
-	// For `wrangler dev`, set CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE to the same URL.
+	// Then uncomment this block and paste the id. Local tests bind Hyperdrive from .dev.vars.
 	// "hyperdrive": [
 	// 	{
 	// 		"binding": "HYPERDRIVE",
@@ -34,7 +26,6 @@
 		"POSTGRES_HOST": "dbaas-db-1025064-do-user-46253107-0.e.db.ondigitalocean.com",
 		"POSTGRES_PORT": "25060",
 		"POSTGRES_USER": "doadmin",
-		"POSTGRES_PASSWORD": "AVNS_vYwTZHZZpPbenuXnZEa",
 		"POSTGRES_DB": "defaultdb",
 		"POSTGRES_SSLMODE": "require",
 		"DB_SCHEMA": "Crocosip_mobile_app",

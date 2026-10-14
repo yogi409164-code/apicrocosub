@@ -1,21 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import {
-	cloudflareTest,
-	readD1Migrations,
-} from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
-const migrationsPath = path.join(__dirname, "..", "migrations");
-const migrations = await readD1Migrations(migrationsPath);
-
-// CROCO_PG=1 runs the suite against PostgreSQL (POSTGRES_* from wrangler.jsonc and .dev.vars)
-// through a local Hyperdrive binding, inside a throwaway schema. CROCO_PG=target keeps the API on
-// D1 and only offers PostgreSQL as a transfer target. Otherwise the tests use local D1 alone.
-const pgMode = process.env.CROCO_PG;
+// Tests use DigitalOcean PostgreSQL through a local Hyperdrive binding, in a throwaway schema.
 const pgSchema = process.env.CROCO_PG_SCHEMA ?? "crocosip_worker_test";
-const pgUrl = pgMode === "1" || pgMode === "target" ? postgresUrl() : undefined;
-const hyperdrives = pgUrl ? { [pgMode === "1" ? "HYPERDRIVE" : "TEST_TARGET_PG"]: pgUrl } : undefined;
+const pgUrl = postgresUrl();
 
 function postgresUrl(): string {
 	const root = path.join(__dirname, "..");
@@ -44,10 +34,9 @@ export default defineConfig({
 			miniflare: {
 				compatibilityFlags: ["experimental", "nodejs_compat"],
 				bindings: {
-					MIGRATIONS: migrations,
-					...(pgMode === "1" ? { DB_SCHEMA: pgSchema } : {}),
+					DB_SCHEMA: pgSchema,
 				},
-				...(hyperdrives ? { hyperdrives } : {}),
+				hyperdrives: { HYPERDRIVE: pgUrl },
 			},
 		}),
 	],
@@ -56,9 +45,7 @@ export default defineConfig({
 	},
 	test: {
 		setupFiles: ["./tests/apply-migrations.ts"],
-		// Every request opens a fresh TLS connection to the remote database.
-		testTimeout: pgUrl ? 120_000 : 5_000,
-		// postgres.js reports workerd's cancelled read after a connection has already closed.
+		testTimeout: 120_000,
 		onUnhandledError: (error) => !(error.message === "Stream was cancelled." && error.stack?.includes("postgres/cf/polyfills")),
 	},
 });

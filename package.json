@@ -1,11 +1,10 @@
 {
 	"name": "apicrocosub",
-	"description": "Complete backend API template using Hono + Chanfana + D1 + Vitest.",
+	"description": "CrocoSip API Worker (Hono + DigitalOcean PostgreSQL).",
 	"cloudflare": {
 		"label": "Backend OpenAPI Template",
 		"products": [
-			"Workers",
-			"D1"
+			"Workers"
 		],
 		"categories": [
 			"storage"
@@ -34,10 +33,8 @@
 	"scripts": {
 		"cf-typegen": "wrangler types",
 		"deploy": "wrangler deploy",
-		"dev": "pnpm seedLocalDb && wrangler dev",
-		"predeploy": "wrangler d1 migrations apply DB --remote",
+		"dev": "wrangler dev",
 		"schema": "npx chanfana",
-		"seedLocalDb": "wrangler d1 migrations apply DB --local",
-		"test": "wrangler deploy --dry-run && npx vitest run --config tests/vitest.config.mts"
+		"test": "npx vitest run --config tests/vitest.config.mts"
 	}
 }

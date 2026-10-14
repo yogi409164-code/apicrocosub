@@ -1517,18 +1517,9 @@ function totalRows(tables: TableCount[]): number {
 	return tables.reduce((sum, table) => sum + (table.rows ?? 0), 0);
 }
 
-function sizeLabel(bytes: unknown): string | null {
-	const size = num(bytes, -1);
-	if (size < 0) return null;
-	if (size < 10 * 1024) return `${size} bytes`;
-	if (size < 10 * 1024 * 1024) return `${Math.round(size / 1024)} kB`;
-	return `${Math.round(size / (1024 * 1024))} MB`;
-}
-
 async function sourceTables(db: D1Database): Promise<string[]> {
 	const pg = postgresOf(db);
-	if (pg) return pg.tables();
-	return (await many(db, "SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => String(row.name));
+	return pg ? pg.tables() : [];
 }
 
 async function localCounts(db: D1Database): Promise<TableCount[]> {
@@ -1542,16 +1533,15 @@ async function localCounts(db: D1Database): Promise<TableCount[]> {
 
 async function databaseDetails(env: Env) {
 	const db = env.DB;
-	const pg = postgresOf(db);
-	const schema = setting(env, "DB_SCHEMA", "crocosub");
+	const schema = setting(env, "DB_SCHEMA", "Crocosip_mobile_app");
 	const details = {
-		engine: pg ? "PostgreSQL (Hyperdrive)" : "Cloudflare D1",
-		host: pg ? setting(env, "POSTGRES_HOST") : "Cloudflare",
-		port: pg ? int(setting(env, "POSTGRES_PORT"), 5432) : 0,
-		database: pg ? setting(env, "POSTGRES_DB") : setting(env, "D1_DATABASE_NAME", "crocosub"),
-		user: pg ? setting(env, "POSTGRES_USER") : "",
+		engine: "PostgreSQL",
+		host: setting(env, "POSTGRES_HOST"),
+		port: int(setting(env, "POSTGRES_PORT"), 25060),
+		database: setting(env, "POSTGRES_DB"),
+		user: setting(env, "POSTGRES_USER"),
 		schema,
-		sslmode: pg ? setting(env, "POSTGRES_SSLMODE") : "",
+		sslmode: setting(env, "POSTGRES_SSLMODE") || "require",
 		connected: false,
 		server_version: null as string | null,
 		size: null as string | null,
@@ -1560,14 +1550,8 @@ async function databaseDetails(env: Env) {
 		error: null as string | null,
 	};
 	try {
-		if (pg) {
-			details.server_version = text((await one(db, "SHOW server_version"))?.server_version);
-			details.size = text((await one(db, "SELECT pg_size_pretty(pg_database_size(current_database())) AS size"))?.size);
-		} else {
-			const version = await one(db, "SELECT sqlite_version() AS version").catch(() => null);
-			details.server_version = version ? `SQLite ${text(version.version)}` : null;
-			details.size = sizeLabel((await db.prepare("SELECT 1").run()).meta.size_after);
-		}
+		details.server_version = text((await one(db, "SHOW server_version"))?.server_version);
+		details.size = text((await one(db, "SELECT pg_size_pretty(pg_database_size(current_database())) AS size"))?.size);
 		details.tables = await localCounts(db);
 		details.connected = true;
 	} catch (error) {
@@ -1583,7 +1567,7 @@ function isCurrentDatabase(env: Env, target: PgTarget): boolean {
 		target.host.trim().toLowerCase() === setting(env, "POSTGRES_HOST").toLowerCase() &&
 		target.port === int(setting(env, "POSTGRES_PORT"), 5432) &&
 		target.database.trim() === setting(env, "POSTGRES_DB") &&
-		target.schema === setting(env, "DB_SCHEMA", "crocosub")
+		target.schema === setting(env, "DB_SCHEMA", "Crocosip_mobile_app")
 	);
 }
 
@@ -1704,7 +1688,7 @@ export function registerCroco(app: App) {
 			await ensureSeed(c.env.DB);
 		} catch (error) {
 			console.error("Database seed failed:", error);
-			const hint = postgresOf(c.env.DB) ? "Check the Hyperdrive connection to PostgreSQL" : "Apply the D1 migrations";
+			const hint = "Check the Hyperdrive connection to DigitalOcean PostgreSQL";
 			return c.json({ detail: `Database is not ready. ${hint}, then try again.` }, 503);
 		}
 		await next();
@@ -1717,27 +1701,22 @@ export function registerCroco(app: App) {
 	route("get", "/health", "health", "Health check", (c) => ({
 		status: "ok",
 		service: setting(c.env, "APP_NAME", "Crocosip API"),
-		schema: setting(c.env, "DB_SCHEMA", "crocosub"),
-		database: postgresOf(c.env.DB) ? "postgresql" : "d1",
+		schema: setting(c.env, "DB_SCHEMA", "Crocosip_mobile_app"),
+		database: "postgresql",
 	}));
 	route("post", "/db/setup", "health", "Create missing tables and seed data", async (c) => {
 		const pg = postgresOf(c.env.DB);
 		const created = pg ? await pg.setup() : [];
 		seeded = null;
 		await ensureSeed(c.env.DB);
-		return { status: "ok", schema: setting(c.env, "DB_SCHEMA", "crocosub"), created_tables: created, added_columns: [], errors: [], tables: pg ? await pg.tables() : [] };
+		return { status: "ok", schema: setting(c.env, "DB_SCHEMA", "Crocosip_mobile_app"), created_tables: created, added_columns: [], errors: [], tables: pg ? await pg.tables() : [] };
 	});
 	route("get", "/db/check", "health", "Check the database", async (c) => {
 		const pg = postgresOf(c.env.DB);
-		const schema = setting(c.env, "DB_SCHEMA", "crocosub");
-		const tables = pg
-			? await pg.tables()
-			: (await many(c.env.DB, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations' ORDER BY name")).map((row) => String(row.name));
+		const schema = setting(c.env, "DB_SCHEMA", "Crocosip_mobile_app");
+		const tables = pg ? await pg.tables() : [];
 		const users = tables.includes("users") ? num((await one(c.env.DB, "SELECT COUNT(*) AS total FROM users"))?.total) : 0;
-		if (pg) {
-			return { status: tables.length ? "ok" : "missing_schema", connected: true, host: setting(c.env, "POSTGRES_HOST"), port: int(setting(c.env, "POSTGRES_PORT"), 5432), database: setting(c.env, "POSTGRES_DB"), schema, schema_exists: tables.length > 0, tables, user_count: users, dialect: "postgresql" };
-		}
-		return { status: "ok", connected: true, host: "cloudflare-d1", port: null, database: schema, schema, schema_exists: true, tables, user_count: users, dialect: "sqlite" };
+		return { status: tables.length ? "ok" : "missing_schema", connected: true, host: setting(c.env, "POSTGRES_HOST"), port: int(setting(c.env, "POSTGRES_PORT"), 25060), database: setting(c.env, "POSTGRES_DB"), schema, schema_exists: tables.length > 0, tables, user_count: users, dialect: "postgresql" };
 	});
 
 	// ---- catalog ----

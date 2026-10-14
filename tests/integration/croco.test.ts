@@ -5,7 +5,7 @@ const base = "http://local.test";
 type Statement = { bind(...values: unknown[]): { run(): Promise<unknown> } };
 type PgBinding = { connectionString: string };
 const bindings = env as unknown as { DB: { prepare(sql: string): Statement }; HYPERDRIVE?: PgBinding; TEST_TARGET_PG?: PgBinding; DB_SCHEMA?: string };
-const onPostgres = Boolean(bindings.HYPERDRIVE);
+const onPostgres = true;
 
 async function call(path: string, init: { method?: string; token?: string; body?: unknown } = {}) {
 	const headers: Record<string, string> = {};
@@ -31,9 +31,9 @@ const PNG =
 
 describe("Crocosip API", () => {
 	it("answers health and service info", async () => {
-		expect((await call("/health")).body).toMatchObject({ status: "ok", schema: bindings.DB_SCHEMA ?? "Crocosip_mobile_app", database: onPostgres ? "postgresql" : "d1" });
+		expect((await call("/health")).body).toMatchObject({ status: "ok", schema: bindings.DB_SCHEMA ?? "Crocosip_mobile_app", database: "postgresql" });
 		const check = (await call("/db/check")).body;
-		expect(check).toMatchObject({ connected: true, dialect: onPostgres ? "postgresql" : "sqlite" });
+		expect(check).toMatchObject({ connected: true, dialect: "postgresql" });
 		expect(check.tables).toEqual(expect.arrayContaining(["users", "juices", "uploads", "upload_chunks"]));
 		expect(check.user_count).toBeGreaterThanOrEqual(2);
 		expect((await call("/")).body).toMatchObject({ docs: "/docs", api: "/api" });
@@ -140,7 +140,14 @@ describe("Crocosip API", () => {
 		const demo = await login("demo", "Demo12345");
 		const details = await call("/admin/database", { token: admin });
 		expect(details.status).toBe(200);
-		expect(details.body).toMatchObject({ connected: true, engine: onPostgres ? "PostgreSQL (Hyperdrive)" : "Cloudflare D1", error: null });
+		expect(details.body).toMatchObject({
+			connected: true,
+			engine: "PostgreSQL",
+			error: null,
+			host: "dbaas-db-1025064-do-user-46253107-0.e.db.ondigitalocean.com",
+			database: "defaultdb",
+			user: "doadmin",
+		});
 		expect(details.body.tables.find((table: { name: string }) => table.name === "users").rows).toBeGreaterThanOrEqual(2);
 		expect((await call("/admin/database")).status).toBe(401);
 		expect((await call("/admin/database", { token: demo })).status).toBe(403);
