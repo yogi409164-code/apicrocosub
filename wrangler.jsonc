@@ -1,0 +1,16 @@
+{
+	"compatibility_date": "2025-10-08",
+	"main": "src/index.ts",
+	"name": "apicrocosub",
+	"upload_source_maps": true,
+	"observability": {
+		"enabled": true
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "crocosub",
+			"database_id": "0dd36c19-21cb-438a-8827-b97a0ec05b57"
+		}
+	]
+}
