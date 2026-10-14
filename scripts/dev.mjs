@@ -8,9 +8,7 @@ const source = fs.readFileSync(path.join(root, "src/croco/source.ts"), "utf8");
 const local = source.match(/export const DATABASE_URL =\s*"([^"]+)"/)?.[1];
 if (!local) throw new Error("DATABASE_URL is missing from src/croco/source.ts");
 
-const stateDir = path.join(root, ".wrangler");
-fs.mkdirSync(stateDir, { recursive: true });
-const localConfig = path.join(stateDir, "dev.jsonc");
+const localConfig = path.join(root, "wrangler.local.jsonc");
 const config = JSON.parse(fs.readFileSync(path.join(root, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
 fs.writeFileSync(
 	localConfig,
