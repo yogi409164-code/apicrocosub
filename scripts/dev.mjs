@@ -26,7 +26,28 @@ const user = encodeURIComponent(v.POSTGRES_USER);
 const password = encodeURIComponent(secrets.POSTGRES_PASSWORD ?? "");
 const local = `postgresql://${user}:${password}@${v.POSTGRES_HOST}:${v.POSTGRES_PORT}/${v.POSTGRES_DB}?sslmode=${v.POSTGRES_SSLMODE || "require"}`;
 
-const child = spawn("npx", ["wrangler", "dev", "--port", "8787", "--local", "--ip", "127.0.0.1"], {
+const stateDir = path.join(root, ".wrangler");
+fs.mkdirSync(stateDir, { recursive: true });
+const localConfig = path.join(stateDir, "dev.jsonc");
+fs.writeFileSync(
+	localConfig,
+	JSON.stringify(
+		{
+			...config,
+			hyperdrive: [
+				{
+					binding: "HYPERDRIVE",
+					id: "00000000000000000000000000000001",
+					localConnectionString: local,
+				},
+			],
+		},
+		null,
+		2,
+	),
+);
+
+const child = spawn("npx", ["wrangler", "dev", "--config", localConfig, "--port", "8787", "--local", "--ip", "127.0.0.1"], {
 	cwd: root,
 	stdio: "inherit",
 	shell: true,

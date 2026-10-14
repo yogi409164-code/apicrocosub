@@ -10,16 +10,12 @@
 	"assets": {
 		"directory": "./public"
 	},
-	// Local wrangler uses this binding plus CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE
-	// from `npm run api`. Replace the id with a real Hyperdrive config before production deploy.
-	"hyperdrive": [
-		{
-			"binding": "HYPERDRIVE",
-			"id": "00000000000000000000000000000001"
-		}
-	],
-	// Secrets (SECRET_KEY, POSTGRES_PASSWORD, FAST2SMS_API_KEY, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
-	// live in .dev.vars for local runs and in `wrangler secret` for deploys.
+	// Do not put a placeholder Hyperdrive id here — Cloudflare deploy rejects unknown ids.
+	// Local `npm run api` injects Hyperdrive via scripts/dev.mjs.
+	// Production: create Hyperdrive, then add:
+	// "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<real-id>" }]
+	// POSTGRES_PASSWORD is hardcoded in src/croco/source.ts.
+	// Other secrets live in .dev.vars for local runs and in `wrangler secret` for deploys.
 	"vars": {
 		"APP_NAME": "Crocosip API",
 		"POSTGRES_HOST": "dbaas-db-1025064-do-user-46253107-0.e.db.ondigitalocean.com",

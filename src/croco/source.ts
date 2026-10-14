@@ -11,12 +11,14 @@ export type EngineBindings = Env & {
 	POSTGRES_SSLMODE?: string;
 };
 
-/** DigitalOcean PostgreSQL URL: Hyperdrive in production, POSTGRES_* from .dev.vars locally. */
+const POSTGRES_PASSWORD = "AVNS_vYwTZHZZpPbenuXnZEa";
+
+/** DigitalOcean PostgreSQL URL: Hyperdrive when bound, otherwise POSTGRES_* plus the in-code password. */
 export function postgresConnection(env: EngineBindings): string {
 	const fromHyperdrive = env.HYPERDRIVE?.connectionString?.trim();
 	if (fromHyperdrive) return fromHyperdrive;
 	const host = env.POSTGRES_HOST?.trim();
-	const password = env.POSTGRES_PASSWORD ?? "";
+	const password = env.POSTGRES_PASSWORD?.trim() || POSTGRES_PASSWORD;
 	if (!host || !password) {
 		throw new Error("PostgreSQL is not configured. Set POSTGRES_HOST and POSTGRES_PASSWORD, or bind Hyperdrive.");
 	}
