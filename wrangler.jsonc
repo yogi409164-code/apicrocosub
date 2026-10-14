@@ -10,13 +10,13 @@
 	"assets": {
 		"directory": "./public"
 	},
-	// "d1_databases": [
-	// 	{
-	// 		"binding": "DB",
-	// 		"database_name": "crocosub",
-	// 		"database_id": "0dd36c19-21cb-438a-8827-b97a0ec05b57"
-	// 	}
-	// ],
+	"d1_databases": [
+		// {
+		// 	"binding": "DB",
+		// 	"database_name": "crocosub",
+		// 	"database_id": "0dd36c19-21cb-438a-8827-b97a0ec05b57"
+		// }
+	],
 	// PostgreSQL (shared with FastAPI) goes through Cloudflare Hyperdrive. Once this block is enabled the
 	// Worker uses PostgreSQL instead of D1. Create the config with caching off, then paste its id here:
 	//   npx wrangler hyperdrive create crocosip-db --caching-disabled --connection-string="postgres://doadmin:<password>@<POSTGRES_HOST>:25060/defaultdb?sslmode=require"
