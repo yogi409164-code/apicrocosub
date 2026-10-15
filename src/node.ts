@@ -19,11 +19,18 @@ function parseEnvFile(text: string): Record<string, string> {
 	return out;
 }
 
+function loadFile(name: string): Record<string, string> {
+	const file = path.join(root, name);
+	return fs.existsSync(file) ? parseEnvFile(fs.readFileSync(file, "utf8")) : {};
+}
+
 function loadEnv(): EngineBindings {
 	const wrangler = JSON.parse(fs.readFileSync(path.join(root, "wrangler.jsonc"), "utf8")) as { vars?: Record<string, string> };
-	const secretsPath = path.join(root, ".dev.vars");
-	const secrets = fs.existsSync(secretsPath) ? parseEnvFile(fs.readFileSync(secretsPath, "utf8")) : {};
-	const env = { ...(wrangler.vars ?? {}), ...secrets } as EngineBindings;
+	const fromProcess: Record<string, string> = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (value !== undefined) fromProcess[key] = value;
+	}
+	const env = { ...(wrangler.vars ?? {}), ...loadFile(".dev.vars"), ...loadFile(".env"), ...fromProcess } as EngineBindings;
 	const certFile = path.join(root, "certs", "digitalocean-ca.pem");
 	if (!env.POSTGRES_CA_CERT?.trim() && fs.existsSync(certFile)) {
 		env.POSTGRES_CA_CERT = fs.readFileSync(certFile, "utf8");
@@ -33,7 +40,7 @@ function loadEnv(): EngineBindings {
 
 const env = loadEnv();
 const port = Number(process.env.PORT || 8787);
-const hostname = process.env.HOST || "127.0.0.1";
+const hostname = process.env.HOST || (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const ctx: ExecutionContext = {
 	waitUntil(promise) {
 		void Promise.resolve(promise).catch((error) => console.error(error));

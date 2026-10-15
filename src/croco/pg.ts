@@ -129,16 +129,26 @@ function sslFor(env: PostgresEnv, sslmode: string): false | { ca?: string; rejec
 	return { rejectUnauthorized: false };
 }
 
+const CLIENT = {
+	max: 1,
+	fetch_types: false,
+	prepare: false,
+	connect_timeout: 8,
+	idle_timeout: 20,
+	max_lifetime: 600,
+	onnotice: () => undefined,
+} as const;
+
 function connectPostgres(env: PostgresEnv): postgres.Sql {
 	const hyperdrive = env.HYPERDRIVE?.connectionString?.trim();
 	if (hyperdrive) {
-		return postgres(hyperdrive, { max: 5, fetch_types: false, prepare: false, onnotice: () => undefined });
+		return postgres(hyperdrive, CLIENT);
 	}
 	const sslmode = env.POSTGRES_SSLMODE?.trim() || "require";
 	const ssl = sslFor(env, sslmode);
 	const url = env.DATABASE_URL?.trim();
 	if (url?.startsWith("postgresql")) {
-		return postgres(url, { max: 5, fetch_types: false, prepare: false, ssl, onnotice: () => undefined });
+		return postgres(url, { ...CLIENT, ssl });
 	}
 	const host = env.POSTGRES_HOST?.trim();
 	const password = env.POSTGRES_PASSWORD ?? "";
@@ -155,10 +165,7 @@ function connectPostgres(env: PostgresEnv): postgres.Sql {
 		username: env.POSTGRES_USER?.trim() || "doadmin",
 		password,
 		ssl,
-		max: 5,
-		fetch_types: false,
-		prepare: false,
-		onnotice: () => undefined,
+		...CLIENT,
 	});
 }
 

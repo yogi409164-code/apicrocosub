@@ -1501,7 +1501,7 @@ function routeOn(app: App) {
 	};
 }
 
-const OPEN_PATHS = new Set(["/", "/health", "/docs", "/openapi.json", "/openapi.yaml", "/redocs"]);
+const OPEN_PATHS = new Set(["/", "/health", "/docs", "/openapi.json", "/openapi.yaml", "/redocs", "/db/check"]);
 
 export function registerCroco(app: App) {
 	const route = routeOn(app);

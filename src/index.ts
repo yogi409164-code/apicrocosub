@@ -71,11 +71,7 @@ export default {
 				return await app.fetch(request, env, ctx);
 			}
 			const source = Source.open(env);
-			try {
-				return await app.fetch(request, { ...env, DB: source.db as unknown as D1Database }, ctx);
-			} finally {
-				ctx.waitUntil(source.close());
-			}
+			return await app.fetch(request, { ...env, DB: source.db as unknown as D1Database }, ctx);
 		} catch (error) {
 			console.error("Worker fetch failed:", error);
 			const detail = error instanceof Error ? error.message.split("\n")[0] : "Worker threw an exception";

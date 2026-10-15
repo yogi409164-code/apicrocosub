@@ -1,0 +1,29 @@
+name: apicrocosub
+region: blr
+services:
+  - name: api
+    dockerfile_path: Dockerfile
+    github:
+      repo: yogi409164-code/apicrocosub
+      branch: main
+      deploy_on_push: true
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    health_check:
+      http_path: /health
+    envs:
+      - key: HOST
+        value: "0.0.0.0"
+      - key: POSTGRES_HOST
+        value: dbaas-db-1025064-do-user-46253107-0.e.db.ondigitalocean.com
+      - key: POSTGRES_PORT
+        value: "25060"
+      - key: POSTGRES_USER
+        value: doadmin
+      - key: POSTGRES_DB
+        value: defaultdb
+      - key: POSTGRES_SSLMODE
+        value: require
+      - key: DB_SCHEMA
+        value: Crocosip_mobile_app
