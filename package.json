@@ -37,6 +37,7 @@
 		"api": "node scripts/run-node-api.mjs",
 		"deploy": "node scripts/run-wrangler.mjs deploy",
 		"setup:db": "node scripts/setup-cloudflare-db.mjs",
+		"secrets": "node scripts/run-wrangler.mjs secret bulk .dev.vars",
 		"dev": "node scripts/run-node-api.mjs",
 		"wrangler": "node scripts/run-wrangler.mjs",
 		"schema": "npx chanfana",

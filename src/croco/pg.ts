@@ -115,8 +115,11 @@ function connectPostgres(env: PostgresEnv): postgres.Sql {
 	}
 	const host = env.POSTGRES_HOST?.trim();
 	const password = env.POSTGRES_PASSWORD ?? "";
-	if (!host || !password) {
-		throw new Error("PostgreSQL is not configured. Set POSTGRES_HOST and POSTGRES_PASSWORD in .dev.vars / wrangler vars, same as apis/.env.");
+	if (!host) {
+		throw new Error("POSTGRES_HOST is not set on this Worker.");
+	}
+	if (!password) {
+		throw new Error("POSTGRES_PASSWORD is not set. Add it as a Cloudflare Worker secret (not .dev.vars). Dashboard: Workers → apicrocosub → Settings → Variables and Secrets → Add POSTGRES_PASSWORD (Secret). Or: npx wrangler secret put POSTGRES_PASSWORD");
 	}
 	const sslmode = env.POSTGRES_SSLMODE?.trim() || "require";
 	return postgres({

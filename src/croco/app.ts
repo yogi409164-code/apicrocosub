@@ -1059,7 +1059,7 @@ function orderOut(row: Row) {
 }
 
 function adminOrderOut(row: Row, user: Row | null) {
-	return {
+		return {
 		...orderOut(row),
 		user_name: user ? String(user.name ?? "") : "Customer",
 		user_email: user ? text(user.email) : null,
@@ -1347,10 +1347,10 @@ async function razorpay(env: Env, path: string, method = "GET", payload?: unknow
 	let response: Response;
 	try {
 		response = await fetch(`https://api.razorpay.com/v1${path}`, {
-			method,
+		method,
 			headers: { Authorization: `Basic ${btoa(`${key}:${secret}`)}`, "Content-Type": "application/json" },
-			body: payload === undefined ? undefined : JSON.stringify(payload),
-		});
+		body: payload === undefined ? undefined : JSON.stringify(payload),
+	});
 	} catch {
 		return { ok: false, status: 0, data: {} };
 	}
@@ -1859,7 +1859,7 @@ export function registerCroco(app: App) {
 				const result = await razorpay(c.env, "/orders", "POST", { amount: paise, currency: currency || "INR", receipt: code });
 				if (!result.ok) raiseApi(result);
 				return { order_id: result.data.id, amount: Math.trunc(num(result.data.amount)), currency: String(result.data.currency || "INR"), key_id: setting(c.env, "RAZORPAY_KEY_ID") };
-			} catch (error) {
+		} catch (error) {
 				paymentError(error);
 			}
 		},
@@ -1889,7 +1889,7 @@ export function registerCroco(app: App) {
 				if (Math.trunc(num(remote.data.amount)) !== expected) throw new HttpError(400, "Payment amount does not match the cart.");
 				const row = await createOrder(c.env.DB, user, items, deliveryType, "UPI");
 				return { verified: true, order: orderOut(row) };
-			} catch (error) {
+		} catch (error) {
 				paymentError(error);
 			}
 		},
@@ -1986,14 +1986,14 @@ export function registerCroco(app: App) {
 			const date = reqStr(await bodyOf(c), "date", 10, 10);
 			const user = await currentUser(c);
 			const target = guardSkipDate(date, false);
-			let touched = 0;
+		let touched = 0;
 			for (const row of await acceptedRows(c.env.DB, user.id)) {
 				if (!deliversOn(row, target)) continue;
 				const skipped = skippedSet(row);
 				skipped.add(target);
 				await writeSkipped(c.env.DB, row, skipped);
-				touched += 1;
-			}
+			touched += 1;
+		}
 			if (!touched) throw new HttpError(400, "No delivery on that date to skip.");
 			return myRequests(c.env.DB, user.id);
 		},
@@ -2009,13 +2009,13 @@ export function registerCroco(app: App) {
 			const date = reqStr(await bodyOf(c), "date", 10, 10);
 			const user = await currentUser(c);
 			const target = guardSkipDate(date, true);
-			let touched = 0;
+		let touched = 0;
 			for (const row of await acceptedRows(c.env.DB, user.id)) {
 				const skipped = skippedSet(row);
 				if (!skipped.delete(target)) continue;
 				await writeSkipped(c.env.DB, row, skipped);
-				touched += 1;
-			}
+			touched += 1;
+		}
 			if (!touched) throw new HttpError(400, "That date is not skipped.");
 			return myRequests(c.env.DB, user.id);
 		},
@@ -2119,7 +2119,7 @@ export function registerCroco(app: App) {
 			try {
 				const ticket = await getOwnedTicket(c.env.DB, c.req.param("ticketId"), user.id);
 				return messageOut(await addMessage(c.env.DB, ticket, "customer", messageBody, user));
-			} catch (error) {
+		} catch (error) {
 				notFoundOr400(error);
 			}
 		},
@@ -2139,7 +2139,7 @@ export function registerCroco(app: App) {
 				if (ticket.status !== "closed") throw new HttpError(400, "You can rate the help after the chat ends.");
 				await run(c.env.DB, "UPDATE support_tickets SET rating = ? WHERE id = ?", rating, ticket.id);
 				return ticketDetail(c.env.DB, await getTicket(c.env.DB, String(ticket.id)), user);
-			} catch (error) {
+		} catch (error) {
 				notFoundOr400(error);
 			}
 		},
@@ -2276,8 +2276,8 @@ export function registerCroco(app: App) {
 			const description = optStr(body, "description", 240);
 			const pages = body.pages === undefined || body.pages === null ? null : listField(body, "pages");
 			await currentAdmin(c);
-			const name = c.req.param("name");
-			const row = await one(c.env.DB, "SELECT * FROM roles WHERE name = ?", name);
+		const name = c.req.param("name");
+		const row = await one(c.env.DB, "SELECT * FROM roles WHERE name = ?", name);
 			if (!row) throw new HttpError(404, "Role not found.");
 			if (description !== null) await run(c.env.DB, "UPDATE roles SET description = ? WHERE name = ?", description.trim(), name);
 			if (pages !== null) await run(c.env.DB, "UPDATE roles SET pages = ? WHERE name = ?", JSON.stringify(name === "admin" ? ADMIN_PAGES : readPages(JSON.stringify(pages))), name);
@@ -2293,11 +2293,11 @@ export function registerCroco(app: App) {
 		"Delete a role",
 		async (c) => {
 			await currentAdmin(c);
-			const name = c.req.param("name");
+		const name = c.req.param("name");
 			if (SYSTEM_ROLES.includes(name)) throw new HttpError(400, "System roles cannot be deleted.");
 			if (!(await one(c.env.DB, "SELECT name FROM roles WHERE name = ?", name))) throw new HttpError(404, "Role not found.");
 			if (await countUsers(c.env.DB, name)) throw new HttpError(400, "Reassign users before deleting this role.");
-			await run(c.env.DB, "DELETE FROM roles WHERE name = ?", name);
+		await run(c.env.DB, "DELETE FROM roles WHERE name = ?", name);
 			return { ok: true };
 		},
 		{ auth: true },
