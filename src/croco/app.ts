@@ -653,6 +653,52 @@ async function juiceById(db: D1Database, id: string): Promise<Row> {
 	return row;
 }
 
+async function applyCategoryOrder(db: D1Database, names: string[]): Promise<string[]> {
+	await syncCategories(db);
+	const rows = await many(db, "SELECT * FROM juice_categories");
+	const known = new Map(rows.map((row) => [String(row.name), num(row.position)]));
+	const cleaned = names.map((name) => name.trim()).filter(Boolean);
+	const ordered = cleaned.filter((name, index) => known.has(name) && cleaned.indexOf(name) === index);
+	const leftover = [...known.keys()].filter((name) => !ordered.includes(name)).sort((a, b) => known.get(a)! - known.get(b)! || a.localeCompare(b));
+	const final = [...ordered, ...leftover];
+	if (final.length) await db.batch(final.map((name, index) => prep(db, "UPDATE juice_categories SET position = ? WHERE name = ?", index, name)));
+	return final;
+}
+
+function menuJuice(raw: unknown, index: number): {
+	id: string;
+	name: string;
+	category: string;
+	sku: string | null;
+	price: number;
+	description: string | null;
+	image_url: string | null;
+	archived: boolean;
+	in_poster: boolean;
+	in_plans: boolean;
+	offer_percent: number;
+	created_at: string | null;
+} {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) invalid(`juices.${index}`, "Input should be a valid object", raw);
+	const row = raw as Body;
+	const name = String(row.name ?? "").trim() || "Untitled juice";
+	const offer = Number(row.offer_percent ?? 0);
+	return {
+		id: String(row.id ?? "").trim(),
+		name,
+		category: String(row.category ?? "Juices").trim() || "Juices",
+		sku: String(row.sku ?? "").trim() || null,
+		price: Number(row.price ?? 0) || 0,
+		description: String(row.description ?? "").trim() || null,
+		image_url: typeof row.image_url === "string" ? row.image_url : null,
+		archived: Boolean(row.archived),
+		in_poster: Boolean(row.in_poster),
+		in_plans: row.in_plans === false ? false : true,
+		offer_percent: Number.isFinite(offer) ? Math.min(Math.max(offer, 0), 90) : 0,
+		created_at: typeof row.created_at === "string" ? row.created_at : null,
+	};
+}
+
 async function syncCategories(db: D1Database): Promise<void> {
 	const existing = new Set((await many(db, "SELECT name FROM juice_categories")).map((row) => String(row.name)));
 	const names = [...new Set((await many(db, "SELECT category FROM juices")).map((row) => String(row.category ?? "Juices").trim() || "Juices"))].sort();
@@ -2499,6 +2545,72 @@ export function registerCroco(app: App) {
 		{ auth: true, status: 201 },
 	);
 
+	route("get", "/admin/juices/export", "admin", "Export the menu", async (c) => {
+		await currentAdmin(c);
+		return { version: 1, juices: (await listJuices(c.env.DB, null)).map(juiceOut), categories: await categoryNames(c.env.DB) };
+	}, { auth: true });
+
+	route("post", "/admin/juices/import", "admin", "Import a menu", async (c) => {
+		const body = await bodyOf(c);
+		const items = listField(body, "juices");
+		if (items.length > 1000) throw new HttpError(400, "Import at most 1000 juices at a time.");
+		const categories = listField(body, "categories", []).map((name, index) => {
+			if (typeof name !== "string") invalid(`categories.${index}`, "Input should be a valid string", name);
+			return name;
+		});
+		await currentAdmin(c);
+		const db = c.env.DB;
+		let created = 0;
+		let updated = 0;
+		for (const [index, item] of items.entries()) {
+			const input = menuJuice(item, index);
+			const id = input.id || uuid();
+			const existing = await one(db, "SELECT id FROM juices WHERE id = ?", id);
+			const image = await normalizeStoredImage(db, input.image_url);
+			if (existing) {
+				await run(
+					db,
+					"UPDATE juices SET name = ?, category = ?, sku = ?, price = ?, description = ?, image_url = ?, archived = ?, in_poster = ?, in_plans = ?, offer_percent = ?, ml = ? WHERE id = ?",
+					input.name,
+					input.category,
+					input.sku,
+					input.price,
+					input.description,
+					image,
+					input.archived ? 1 : 0,
+					input.in_poster ? 1 : 0,
+					input.in_plans ? 1 : 0,
+					input.offer_percent,
+					mlFromName(input.name),
+					id,
+				);
+				updated += 1;
+			} else {
+				await run(
+					db,
+					"INSERT INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, ml, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					id,
+					input.name,
+					input.category,
+					input.sku,
+					input.price,
+					input.description,
+					image,
+					input.archived ? 1 : 0,
+					input.in_poster ? 1 : 0,
+					input.in_plans ? 1 : 0,
+					input.offer_percent,
+					mlFromName(input.name),
+					input.created_at || nowIso(),
+				);
+				created += 1;
+			}
+			await ensureCategory(db, input.category);
+		}
+		const names = categories.length ? await applyCategoryOrder(db, categories) : await categoryNames(db);
+		return { imported: created + updated, created, updated, categories: names };
+	}, { auth: true });
+
 	route("post", "/admin/juices/upload", "admin", "Upload a juice image", async (c) => {
 		const dataUrl = reqStr(await bodyOf(c), "data_url");
 		await currentAdmin(c);
@@ -2587,16 +2699,7 @@ export function registerCroco(app: App) {
 			return name;
 		});
 		await currentAdmin(c);
-		const db = c.env.DB;
-		await syncCategories(db);
-		const rows = await many(db, "SELECT * FROM juice_categories");
-		const known = new Map(rows.map((row) => [String(row.name), num(row.position)]));
-		const cleaned = names.map((name) => name.trim()).filter(Boolean);
-		const ordered = cleaned.filter((name, index) => known.has(name) && cleaned.indexOf(name) === index);
-		const leftover = [...known.keys()].filter((name) => !ordered.includes(name)).sort((a, b) => known.get(a)! - known.get(b)! || a.localeCompare(b));
-		const final = [...ordered, ...leftover];
-		if (final.length) await db.batch(final.map((name, index) => prep(db, "UPDATE juice_categories SET position = ? WHERE name = ?", index, name)));
-		return { names: final };
+		return { names: await applyCategoryOrder(c.env.DB, names) };
 	}, { auth: true });
 
 	route("get", "/admin/plans", "admin", "All plans", async (c) => {
