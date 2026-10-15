@@ -58,14 +58,28 @@ for (const route of crocoRoutes) {
 	});
 }
 
-// The API always uses DigitalOcean PostgreSQL (the same database as FastAPI).
+const OPEN_PATHS = new Set(["/", "/health", "/docs", "/openapi.json", "/openapi.yaml", "/redocs"]);
+
+function needsDatabase(pathname: string): boolean {
+	return !OPEN_PATHS.has(pathname);
+}
+
 export default {
 	async fetch(request, env, ctx) {
-		const source = Source.open(env);
 		try {
-			return await app.fetch(request, { ...env, DB: source.db as unknown as D1Database }, ctx);
-		} finally {
-			ctx.waitUntil(source.close());
+			if (!needsDatabase(new URL(request.url).pathname)) {
+				return await app.fetch(request, env, ctx);
+			}
+			const source = Source.open(env);
+			try {
+				return await app.fetch(request, { ...env, DB: source.db as unknown as D1Database }, ctx);
+			} finally {
+				ctx.waitUntil(source.close());
+			}
+		} catch (error) {
+			console.error("Worker fetch failed:", error);
+			const detail = error instanceof Error ? error.message.split("\n")[0] : "Worker threw an exception";
+			return Response.json({ detail }, { status: 503, headers: { "access-control-allow-origin": "*" } });
 		}
 	},
 } satisfies ExportedHandler<EngineBindings>;
