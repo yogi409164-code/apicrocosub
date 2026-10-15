@@ -23,7 +23,12 @@ function loadEnv(): EngineBindings {
 	const wrangler = JSON.parse(fs.readFileSync(path.join(root, "wrangler.jsonc"), "utf8")) as { vars?: Record<string, string> };
 	const secretsPath = path.join(root, ".dev.vars");
 	const secrets = fs.existsSync(secretsPath) ? parseEnvFile(fs.readFileSync(secretsPath, "utf8")) : {};
-	return { ...(wrangler.vars ?? {}), ...secrets } as EngineBindings;
+	const env = { ...(wrangler.vars ?? {}), ...secrets } as EngineBindings;
+	const certFile = path.join(root, "certs", "digitalocean-ca.pem");
+	if (!env.POSTGRES_CA_CERT?.trim() && fs.existsSync(certFile)) {
+		env.POSTGRES_CA_CERT = fs.readFileSync(certFile, "utf8");
+	}
+	return env;
 }
 
 const env = loadEnv();

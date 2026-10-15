@@ -9,6 +9,7 @@ export type PostgresEnv = {
 	POSTGRES_PASSWORD?: string;
 	POSTGRES_DB?: string;
 	POSTGRES_SSLMODE?: string;
+	POSTGRES_CA_CERT?: string;
 	DATABASE_URL?: string;
 	HYPERDRIVE?: { connectionString: string };
 };
@@ -104,14 +105,40 @@ class PgStatement {
 	}
 }
 
+function pemFromEnv(value?: string): string | undefined {
+	if (!value?.trim()) return undefined;
+	let pem = value.trim().replace(/^["']|["']$/g, "").replace(/\\n/g, "\n");
+	if (pem.includes("BEGIN CERTIFICATE") && !pem.includes("\n")) {
+		pem = pem.replace("-----BEGIN CERTIFICATE-----", "-----BEGIN CERTIFICATE-----\n").replace("-----END CERTIFICATE-----", "\n-----END CERTIFICATE-----");
+	}
+	if (!pem.includes("BEGIN CERTIFICATE")) {
+		try {
+			const decoded = Buffer.from(pem, "base64").toString("utf8");
+			if (decoded.includes("BEGIN CERTIFICATE")) pem = decoded;
+		} catch {
+			return undefined;
+		}
+	}
+	return pem.includes("BEGIN CERTIFICATE") ? pem : undefined;
+}
+
+function sslFor(env: PostgresEnv, sslmode: string): false | { ca?: string; rejectUnauthorized: boolean } {
+	if (sslmode === "disable") return false;
+	const ca = pemFromEnv(env.POSTGRES_CA_CERT);
+	if (ca) return { ca, rejectUnauthorized: true };
+	return { rejectUnauthorized: false };
+}
+
 function connectPostgres(env: PostgresEnv): postgres.Sql {
 	const hyperdrive = env.HYPERDRIVE?.connectionString?.trim();
 	if (hyperdrive) {
 		return postgres(hyperdrive, { max: 5, fetch_types: false, prepare: false, onnotice: () => undefined });
 	}
+	const sslmode = env.POSTGRES_SSLMODE?.trim() || "require";
+	const ssl = sslFor(env, sslmode);
 	const url = env.DATABASE_URL?.trim();
 	if (url?.startsWith("postgresql")) {
-		return postgres(url, { max: 5, fetch_types: false, prepare: false, ssl: { rejectUnauthorized: false }, onnotice: () => undefined });
+		return postgres(url, { max: 5, fetch_types: false, prepare: false, ssl, onnotice: () => undefined });
 	}
 	const host = env.POSTGRES_HOST?.trim();
 	const password = env.POSTGRES_PASSWORD ?? "";
@@ -121,14 +148,13 @@ function connectPostgres(env: PostgresEnv): postgres.Sql {
 	if (!password) {
 		throw new Error("POSTGRES_PASSWORD is not set. Add it as a Cloudflare Worker secret (not .dev.vars). Dashboard: Workers → apicrocosub → Settings → Variables and Secrets → Add POSTGRES_PASSWORD (Secret). Or: npx wrangler secret put POSTGRES_PASSWORD");
 	}
-	const sslmode = env.POSTGRES_SSLMODE?.trim() || "require";
 	return postgres({
 		host,
 		port: Number(env.POSTGRES_PORT || 25060),
 		database: env.POSTGRES_DB?.trim() || "defaultdb",
 		username: env.POSTGRES_USER?.trim() || "doadmin",
 		password,
-		ssl: sslmode === "disable" ? false : { rejectUnauthorized: false },
+		ssl,
 		max: 5,
 		fetch_types: false,
 		prepare: false,

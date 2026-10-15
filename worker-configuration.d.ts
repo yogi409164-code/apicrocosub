@@ -10,6 +10,7 @@ interface __BaseEnv_Env {
 	POSTGRES_PASSWORD?: string;
 	POSTGRES_DB?: string;
 	POSTGRES_SSLMODE?: string;
+	POSTGRES_CA_CERT?: string;
 	DATABASE_URL?: string;
 	HYPERDRIVE?: Hyperdrive;
 }
