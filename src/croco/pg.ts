@@ -218,6 +218,7 @@ export async function schemaTables(sql: Sql, schema: string): Promise<string[]> 
 
 export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(schemaSql(schema)).simple();
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.plans ADD COLUMN IF NOT EXISTS items TEXT NOT NULL DEFAULT ''`);
 }
 
 function schemaSql(schema: string): string {
@@ -302,7 +303,8 @@ CREATE TABLE IF NOT EXISTS ${s}.plans (
   image TEXT NOT NULL DEFAULT '',
   bottles VARCHAR(64) NOT NULL DEFAULT '',
   popular BOOLEAN NOT NULL DEFAULT FALSE,
-  position INTEGER NOT NULL DEFAULT 0
+  position INTEGER NOT NULL DEFAULT 0,
+  items TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS ${s}.plan_requests (
   id VARCHAR(64) PRIMARY KEY,

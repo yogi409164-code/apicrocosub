@@ -67,30 +67,6 @@ const DEFAULT_GOOGLE_IDS = [
 	"1028343714410-bravnjrjce1u6pt8jlrom7320qgdtqgd.apps.googleusercontent.com",
 ];
 
-const FRUIT_BOWL_NOTE = "Single fruit, cut to order. No added sugar.";
-const MIX_BOWL_NOTE = "Any two fruits, cut to order. Pomegranate is single bowl only.";
-const SALAD_MENU: { id: string; name: string; category: string; price: number; description: string; image?: string }[] = [
-	{ id: "salad-watermelon", name: "Watermelon Bowl", category: "Fruit Bowls", price: 39, description: FRUIT_BOWL_NOTE },
-	{ id: "salad-guava", name: "Guava Bowl", category: "Fruit Bowls", price: 69, description: FRUIT_BOWL_NOTE },
-	{ id: "salad-pineapple", name: "Pineapple Bowl", category: "Fruit Bowls", price: 69, description: FRUIT_BOWL_NOTE },
-	{ id: "salad-apple", name: "Apple Bowl", category: "Fruit Bowls", price: 69, description: FRUIT_BOWL_NOTE },
-	{ id: "salad-pomegranate", name: "Pomegranate Bowl", category: "Fruit Bowls", price: 149, description: FRUIT_BOWL_NOTE },
-	{ id: "salad-watermelon-guava", name: "Watermelon + Guava Bowl", category: "Mixed Fruit Bowls", price: 69, description: MIX_BOWL_NOTE },
-	{ id: "salad-watermelon-pineapple", name: "Watermelon + Pineapple Bowl", category: "Mixed Fruit Bowls", price: 69, description: MIX_BOWL_NOTE },
-	{ id: "salad-watermelon-apple", name: "Watermelon + Apple Bowl", category: "Mixed Fruit Bowls", price: 69, description: MIX_BOWL_NOTE },
-	{ id: "salad-guava-pineapple", name: "Guava + Pineapple Bowl", category: "Mixed Fruit Bowls", price: 69, description: MIX_BOWL_NOTE, image: "pineapple-guava" },
-	{ id: "salad-guava-apple", name: "Guava + Apple Bowl", category: "Mixed Fruit Bowls", price: 69, description: MIX_BOWL_NOTE },
-	{ id: "salad-pineapple-apple", name: "Pineapple + Apple Bowl", category: "Mixed Fruit Bowls", price: 69, description: MIX_BOWL_NOTE },
-	{ id: "salad-mixed", name: "Mixed Fruit Bowl", category: "Mixed Fruit Bowls", price: 79, description: "Watermelon, guava, pineapple and apple, cut to order." },
-];
-
-const DEFAULT_PLANS = [
-	{ id: "days30", name: "Fresh Start", duration: "30", unit: "days", price: "₹499", period: "30 days", bottles: "30 bottles", description: "One bottle a day for a month. Perfect to try CrocoSip.", color: "#FF7A00", image: "https://images.unsplash.com/photo-1621506289937-a8e4df240d0b?auto=format&fit=crop&w=900&q=80", popular: 0, position: 0 },
-	{ id: "days60", name: "Daily Sip", duration: "60", unit: "days", price: "₹899", period: "60 days", bottles: "60 bottles", description: "Our most popular plan. Fresh juice at your door, every day.", color: "#E24A16", image: "https://images.unsplash.com/photo-1613478223719-2ab802602423?auto=format&fit=crop&w=900&q=80", popular: 1, position: 1 },
-	{ id: "days90", name: "Wellness", duration: "90", unit: "days", price: "₹1,299", period: "90 days", bottles: "90 bottles", description: "Three months of cold-pressed juice. Stay consistent.", color: "#64B400", image: "https://images.unsplash.com/photo-1600271886742-f049cd451bba?auto=format&fit=crop&w=900&q=80", popular: 0, position: 2 },
-	{ id: "days120", name: "Best Value", duration: "120", unit: "days", price: "₹1,599", period: "120 days", bottles: "120 bottles", description: "Four months prepaid. The lowest price per bottle.", color: "#168F86", image: "https://images.unsplash.com/photo-1570197788417-0e82375c9371?auto=format&fit=crop&w=900&q=80", popular: 0, position: 3 },
-];
-
 class HttpError extends Error {
 	constructor(
 		readonly status: number,
@@ -442,19 +418,7 @@ async function seedAll(db: D1Database): Promise<void> {
 	if (!(await findUser(db, "admin"))) {
 		await run(db, "INSERT OR IGNORE INTO users (id, username, email, name, password_hash, provider, role, special_access, created_at) VALUES ('admin-user', 'admin', 'admin@crocosip.app', 'Admin', ?, 'password', 'admin', FALSE, ?)", await hashPassword("1234"), nowIso());
 	}
-	await db.batch(
-		SALAD_MENU.map((row) =>
-			prep(db, "INSERT OR IGNORE INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, FALSE, TRUE, 0, ?)", row.id, row.name, row.category, row.id, row.price, row.description, `/uploads/juices/salad-${row.image ?? row.id.replace(/^salad-/, "")}.png`, nowIso()),
-		),
-	);
 	await syncCategories(db);
-	if (!(await one(db, "SELECT id FROM plans LIMIT 1"))) {
-		await db.batch(
-			DEFAULT_PLANS.map((plan) =>
-				prep(db, "INSERT OR IGNORE INTO plans (id, name, duration, unit, price, period, description, color, image, bottles, popular, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", plan.id, plan.name, plan.duration, plan.unit, plan.price, plan.period, plan.description, plan.color, plan.image, plan.bottles, plan.popular, plan.position),
-			),
-		);
-	}
 	await storeRow(db);
 }
 
@@ -720,6 +684,56 @@ async function categoryNames(db: D1Database): Promise<string[]> {
 	return (await many(db, "SELECT name FROM juice_categories ORDER BY position ASC, name ASC")).map((row) => String(row.name));
 }
 
+function planItemId(item: unknown): string {
+	if (item && typeof item === "object" && !Array.isArray(item) && "id" in item) {
+		return String((item as { id?: unknown }).id ?? "").trim();
+	}
+	return typeof item === "string" || typeof item === "number" ? String(item).trim() : "";
+}
+
+function planItemQty(item: unknown): number {
+	if (item && typeof item === "object" && !Array.isArray(item) && "qty" in item) {
+		const qty = Number((item as { qty?: unknown }).qty);
+		if (Number.isFinite(qty)) return Math.max(1, Math.min(99, Math.round(qty)));
+	}
+	return 1;
+}
+
+function parsePlanRows(raw: unknown): { id: string; qty: number }[] {
+	let parsed: unknown = raw;
+	if (typeof raw === "string" && raw.trim()) {
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return raw.split(",").map((item) => item.trim()).filter(Boolean).map((id) => ({ id, qty: 1 }));
+		}
+	}
+	if (!Array.isArray(parsed)) return [];
+	const rows: { id: string; qty: number }[] = [];
+	for (const item of parsed) {
+		const id = planItemId(item);
+		if (id) rows.push({ id, qty: planItemQty(item) });
+	}
+	return rows;
+}
+
+function parsePlanItems(raw: unknown): string[] {
+	return parsePlanRows(raw).map((item) => item.id);
+}
+
+function parsePlanQtys(raw: unknown): Record<string, number> {
+	return Object.fromEntries(parsePlanRows(raw).map((item) => [item.id, item.qty]));
+}
+
+function encodePlanItems(ids: string[], qtys: Record<string, number>): string {
+	return JSON.stringify(
+		ids.map((id) => {
+			const qty = Number(qtys[id]);
+			return { id, qty: Number.isFinite(qty) ? Math.max(1, Math.min(99, Math.round(qty))) : 1 };
+		}),
+	);
+}
+
 function planOut(row: Row) {
 	return {
 		id: String(row.id),
@@ -734,6 +748,8 @@ function planOut(row: Row) {
 		bottles: String(row.bottles ?? ""),
 		popular: bool(row.popular),
 		position: num(row.position),
+		items: parsePlanItems(row.items),
+		item_qtys: parsePlanQtys(row.items),
 	};
 }
 
@@ -2707,19 +2723,40 @@ export function registerCroco(app: App) {
 		return (await listPlans(c.env.DB)).map(planOut);
 	}, { auth: true });
 
-	const readPlan = (body: Body) => ({
-		name: reqStr(body, "name"),
-		duration: optStr(body, "duration", undefined, "30") ?? "30",
-		unit: optStr(body, "unit", undefined, "days") ?? "days",
-		price: optStr(body, "price", undefined, "₹0") ?? "₹0",
-		period: optStr(body, "period") ?? "",
-		description: optStr(body, "description", undefined, "") ?? "",
-		color: optStr(body, "color", undefined, "#FF7A00") ?? "#FF7A00",
-		image: optStr(body, "image", undefined, "") ?? "",
-		bottles: optStr(body, "bottles", undefined, "") ?? "",
-		popular: optBool(body, "popular") ?? false,
-		position: optNum(body, "position", { integer: true }),
-	});
+	const readPlan = (body: Body) => {
+		const items = listField(body, "items", []).map((item, index) => {
+			if (item && typeof item === "object" && !Array.isArray(item)) {
+				const id = planItemId(item);
+				if (!id) invalid(`items.${index}.id`, "Input should be a valid string", item);
+				return id;
+			}
+			if (typeof item !== "string" && typeof item !== "number") invalid(`items.${index}`, "Input should be a valid string", item);
+			return String(item).trim();
+		}).filter(Boolean);
+		const qtysRaw = body.item_qtys;
+		const qtys: Record<string, number> = {};
+		if (qtysRaw && typeof qtysRaw === "object" && !Array.isArray(qtysRaw)) {
+			for (const [id, value] of Object.entries(qtysRaw as Record<string, unknown>)) {
+				const qty = Number(value);
+				if (id.trim() && Number.isFinite(qty)) qtys[id.trim()] = Math.max(1, Math.min(99, Math.round(qty)));
+			}
+		}
+		return {
+			name: reqStr(body, "name"),
+			duration: optStr(body, "duration", undefined, "30") ?? "30",
+			unit: optStr(body, "unit", undefined, "days") ?? "days",
+			price: optStr(body, "price", undefined, "₹0") ?? "₹0",
+			period: optStr(body, "period") ?? "",
+			description: optStr(body, "description", undefined, "") ?? "",
+			color: optStr(body, "color", undefined, "#FF7A00") ?? "#FF7A00",
+			image: optStr(body, "image", undefined, "") ?? "",
+			bottles: optStr(body, "bottles", undefined, "") ?? "",
+			popular: optBool(body, "popular") ?? false,
+			position: optNum(body, "position", { integer: true }),
+			items,
+			itemQtys: qtys,
+		};
+	};
 
 	route(
 		"post",
@@ -2734,7 +2771,7 @@ export function registerCroco(app: App) {
 			const position = input.position ?? num((await one(db, "SELECT MAX(position) AS top FROM plans"))?.top, -1) + 1;
 			await run(
 				db,
-				"INSERT INTO plans (id, name, duration, unit, price, period, description, color, image, bottles, popular, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO plans (id, name, duration, unit, price, period, description, color, image, bottles, popular, position, items) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				id,
 				input.name.trim() || "Plan",
 				input.duration.trim() || "30",
@@ -2747,6 +2784,7 @@ export function registerCroco(app: App) {
 				input.bottles.trim(),
 				input.popular ? 1 : 0,
 				position,
+				encodePlanItems(input.items, input.itemQtys),
 			);
 			return planOut((await one(db, "SELECT * FROM plans WHERE id = ?", id))!);
 		},
@@ -2766,7 +2804,7 @@ export function registerCroco(app: App) {
 			if (!plan) throw new HttpError(404, "Plan not found.");
 			await run(
 				db,
-				"UPDATE plans SET name = ?, duration = ?, unit = ?, price = ?, period = ?, description = ?, color = ?, image = ?, bottles = ?, popular = ?, position = ? WHERE id = ?",
+				"UPDATE plans SET name = ?, duration = ?, unit = ?, price = ?, period = ?, description = ?, color = ?, image = ?, bottles = ?, popular = ?, position = ?, items = ? WHERE id = ?",
 				input.name.trim() || plan.name,
 				input.duration.trim() || plan.duration,
 				input.unit.trim() || plan.unit,
@@ -2778,6 +2816,7 @@ export function registerCroco(app: App) {
 				input.bottles.trim(),
 				input.popular ? 1 : 0,
 				input.position ?? plan.position,
+				encodePlanItems(input.items, input.itemQtys),
 				plan.id,
 			);
 			return planOut((await one(db, "SELECT * FROM plans WHERE id = ?", plan.id))!);
