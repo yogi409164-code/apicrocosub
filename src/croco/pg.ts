@@ -28,6 +28,7 @@ export const APP_TABLES = [
 	"plans",
 	"plan_requests",
 	"juice_orders",
+	"wallet_entries",
 	"support_tickets",
 	"support_messages",
 	"phone_otps",
@@ -251,6 +252,7 @@ export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS rating INTEGER`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS payment_id VARCHAR(64)`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(24)`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.users ADD COLUMN IF NOT EXISTS wallet_balance DOUBLE PRECISION NOT NULL DEFAULT 0`);
 }
 
 function schemaSql(schema: string): string {
@@ -281,6 +283,7 @@ CREATE TABLE IF NOT EXISTS ${s}.users (
   special_access BOOLEAN NOT NULL DEFAULT FALSE,
   special_lat DOUBLE PRECISION,
   special_lng DOUBLE PRECISION,
+  wallet_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS ${s}.saved_addresses (
@@ -386,6 +389,17 @@ CREATE TABLE IF NOT EXISTS ${s}.juice_orders (
   rating INTEGER,
   payment_id VARCHAR(64),
   payment_status VARCHAR(24),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ${s}.wallet_entries (
+  id VARCHAR(64) PRIMARY KEY,
+  user_id VARCHAR(64) NOT NULL,
+  amount DOUBLE PRECISION NOT NULL,
+  kind VARCHAR(16) NOT NULL DEFAULT 'credit',
+  source VARCHAR(24) NOT NULL DEFAULT 'admin',
+  note VARCHAR(240),
+  order_id VARCHAR(64),
+  created_by VARCHAR(64),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS ${s}.support_tickets (

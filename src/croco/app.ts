@@ -513,7 +513,85 @@ async function userOut(db: D1Database, user: Row) {
 		special_lat: numOrNull(user.special_lat),
 		special_lng: numOrNull(user.special_lng),
 		saved_addresses: (await savedAddresses(db, user.id)).map(addressOut),
+		wallet_balance: Math.round(num(user.wallet_balance) * 100) / 100,
 	};
+}
+
+function moneyOf(value: unknown) {
+	return Math.round(num(value) * 100) / 100;
+}
+
+function walletEntryOut(row: Row, user: Row | null = null) {
+	return {
+		id: String(row.id),
+		user_id: String(row.user_id),
+		user_name: user ? String(user.name ?? "") : null,
+		user_phone: user ? text(user.phone) : null,
+		user_email: user ? text(user.email) : null,
+		amount: moneyOf(row.amount),
+		kind: String(row.kind || "credit"),
+		source: String(row.source || "admin"),
+		note: text(row.note),
+		order_id: text(row.order_id),
+		balance: user ? moneyOf(user.wallet_balance) : null,
+		created_at: text(row.created_at),
+	};
+}
+
+async function findWalletUser(db: D1Database, identifier: string): Promise<Row | null> {
+	const value = identifier.trim();
+	if (!value) return null;
+	const digits = value.replace(/\D/g, "");
+	return one(
+		db,
+		"SELECT * FROM users WHERE email = ? OR username = ? OR id = ? OR phone = ? OR phone = ? LIMIT 1",
+		value,
+		value,
+		value,
+		value,
+		digits.length >= 10 ? digits.slice(-10) : value,
+	);
+}
+
+async function creditWallet(db: D1Database, identifier: string, amount: number, note: string | null, createdBy: string | null) {
+	const rupees = moneyOf(amount);
+	if (rupees <= 0) throw new HttpError(400, "Enter an amount greater than zero.");
+	const user = await findWalletUser(db, identifier);
+	if (!user) throw new HttpError(400, "No customer matches that phone, email, or ID.");
+	const next = moneyOf(num(user.wallet_balance) + rupees);
+	await run(db, "UPDATE users SET wallet_balance = ? WHERE id = ?", next, user.id);
+	const id = uuid();
+	await run(
+		db,
+		"INSERT INTO wallet_entries (id, user_id, amount, kind, source, note, order_id, created_by, created_at) VALUES (?, ?, ?, 'credit', 'admin', ?, NULL, ?, ?)",
+		id,
+		user.id,
+		rupees,
+		note,
+		createdBy,
+		nowIso(),
+	);
+	const updated = (await userById(db, user.id)) ?? user;
+	const row = (await one(db, "SELECT * FROM wallet_entries WHERE id = ?", id))!;
+	return walletEntryOut(row, updated);
+}
+
+async function debitWallet(db: D1Database, user: Row, amount: number, note: string | null, orderId: string | null) {
+	const rupees = moneyOf(amount);
+	const current = moneyOf(user.wallet_balance);
+	if (current + 1e-9 < rupees) throw new HttpError(400, "Not enough wallet money.");
+	const next = moneyOf(current - rupees);
+	await run(db, "UPDATE users SET wallet_balance = ? WHERE id = ?", next, user.id);
+	await run(
+		db,
+		"INSERT INTO wallet_entries (id, user_id, amount, kind, source, note, order_id, created_by, created_at) VALUES (?, ?, ?, 'debit', 'order', ?, ?, NULL, ?)",
+		uuid(),
+		user.id,
+		-rupees,
+		note,
+		orderId,
+		nowIso(),
+	);
 }
 
 async function adminUserOut(db: D1Database, user: Row) {
@@ -522,7 +600,7 @@ async function adminUserOut(db: D1Database, user: Row) {
 
 async function findUser(db: D1Database, identifier: string): Promise<Row | null> {
 	const value = identifier.trim();
-	return one(db, "SELECT * FROM users WHERE email = ? OR username = ? OR id = ? LIMIT 1", value, value, value);
+	return one(db, "SELECT * FROM users WHERE email = ? OR username = ? OR id = ? OR phone = ? LIMIT 1", value, value, value, value);
 }
 
 async function userById(db: D1Database, id: unknown): Promise<Row | null> {
@@ -1384,6 +1462,9 @@ async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType
 		}
 	}
 	const prepared = await prepareOrder(db, user, items, deliveryType);
+	if (method === "WALLET" && moneyOf(user.wallet_balance) + 1e-9 < prepared.subtotal) {
+		throw new HttpError(400, "Not enough wallet money.");
+	}
 	const id = uuid();
 	await run(
 		db,
@@ -1402,10 +1483,18 @@ async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType
 		prepared.slotDate,
 		prepared.slotWindow,
 		prepared.kind,
-		paymentId ? String(paymentId) : null,
-		method === "UPI" ? "paid" : "cod",
+		paymentId ? String(paymentId) : method === "WALLET" ? `wallet_${id}` : null,
+		method === "UPI" || method === "WALLET" ? "paid" : "cod",
 		nowIso(),
 	);
+	if (method === "WALLET") {
+		try {
+			await debitWallet(db, user, prepared.subtotal, `Order ${id}`, id);
+		} catch (error) {
+			await run(db, "DELETE FROM juice_orders WHERE id = ?", id);
+			throw error;
+		}
+	}
 	return (await one(db, "SELECT * FROM juice_orders WHERE id = ?", id))!;
 }
 
@@ -2115,6 +2204,12 @@ export function registerCroco(app: App) {
 
 	route("get", "/auth/me", "auth", "Current user", async (c) => userOut(c.env.DB, await currentUser(c)), { auth: true });
 
+	route("get", "/wallet/me", "wallet", "My wallet", async (c) => {
+		const user = await currentUser(c);
+		const entries = await many(c.env.DB, "SELECT * FROM wallet_entries WHERE user_id = ? ORDER BY created_at DESC LIMIT 50", user.id);
+		return { balance: moneyOf(user.wallet_balance), entries: entries.map((row) => walletEntryOut(row, user)) };
+	}, { auth: true });
+
 	route(
 		"patch",
 		"/auth/me/phone",
@@ -2309,7 +2404,9 @@ export function registerCroco(app: App) {
 			const items = validOrderItems(body, "items", true);
 			const deliveryType = optStr(body, "delivery_type", 64, "slot") ?? "slot";
 			const user = await currentUser(c);
-			return orderOut(await createOrder(c.env.DB, user, items, deliveryType, "COD"));
+			const method = (optStr(body, "payment_method", 24, "COD") ?? "COD").toUpperCase();
+			if (!["COD", "WALLET"].includes(method)) throw new HttpError(400, "Choose a valid payment method.");
+			return orderOut(await createOrder(c.env.DB, user, items, deliveryType, method));
 		},
 		{ auth: true, status: 201 },
 	);
@@ -3338,6 +3435,29 @@ export function registerCroco(app: App) {
 	}, { auth: true });
 
 	// ---- admin: payments ----
+	route("get", "/admin/wallet/ledger", "admin", "Wallet ledger", async (c) => {
+		await currentAdmin(c);
+		const rows = await many(c.env.DB, "SELECT * FROM wallet_entries ORDER BY created_at DESC LIMIT 50");
+		const users = new Map<string, Row>();
+		for (const row of rows) {
+			const userId = String(row.user_id);
+			if (!users.has(userId)) {
+				const person = await userById(c.env.DB, userId);
+				if (person) users.set(userId, person);
+			}
+		}
+		return rows.map((row) => walletEntryOut(row, users.get(String(row.user_id)) ?? null));
+	}, { auth: true });
+
+	route("post", "/admin/wallet/credit", "admin", "Add wallet money", async (c) => {
+		const admin = await currentAdmin(c);
+		const body = await bodyOf(c);
+		const identifier = reqStr(body, "identifier", 255);
+		const amount = reqNum(body, "amount", { ge: 0.01 });
+		const note = optStr(body, "note", 240);
+		return creditWallet(c.env.DB, identifier, amount, note, String(admin.id));
+	}, { auth: true });
+
 	route("get", "/admin/payments", "admin", "Razorpay transactions", async (c) => {
 		await currentAdmin(c);
 		try {
