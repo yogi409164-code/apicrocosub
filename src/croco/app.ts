@@ -1723,6 +1723,74 @@ function daysBetween(start: number | null, end: number | null): number | null {
 	return Math.max(0, Math.round((day(end) - day(start)) / 86_400_000));
 }
 
+function msOf(value: unknown): number | null {
+	return typeof value === "number" ? value * 1000 : null;
+}
+
+function isoOf(ms: number | null): string | null {
+	return ms === null ? null : new Date(ms).toISOString();
+}
+
+function inIst(ms: number) {
+	return new Date(ms + IST_OFFSET_MS);
+}
+
+function formatIst(ms: number | null) {
+	if (ms === null) return null;
+	return inIst(ms).toLocaleString("en-IN", {
+		weekday: "short",
+		day: "2-digit",
+		month: "short",
+		year: "numeric",
+		hour: "numeric",
+		minute: "2-digit",
+		hour12: true,
+		timeZone: "UTC",
+	});
+}
+
+function nextWorkingDay1pm(fromMs: number) {
+	const local = inIst(fromMs);
+	local.setUTCDate(local.getUTCDate() + 1);
+	while (local.getUTCDay() === 0 || local.getUTCDay() === 6) local.setUTCDate(local.getUTCDate() + 1);
+	local.setUTCHours(13, 0, 0, 0);
+	return local.getTime() - IST_OFFSET_MS;
+}
+
+function addWorkingDays(fromMs: number, days: number) {
+	const local = inIst(fromMs);
+	let added = 0;
+	while (added < days) {
+		local.setUTCDate(local.getUTCDate() + 1);
+		const weekday = local.getUTCDay();
+		if (weekday !== 0 && weekday !== 6) added += 1;
+	}
+	local.setUTCHours(13, 0, 0, 0);
+	return local.getTime() - IST_OFFSET_MS;
+}
+
+function timelineStep(input: {
+	key: string;
+	label: string;
+	at?: number | null;
+	state?: string;
+	detail?: string | null;
+	amount?: number | null;
+	days_after?: number | null;
+	children?: Row[];
+}) {
+	return {
+		key: input.key,
+		label: input.label,
+		at: isoOf(input.at ?? null),
+		state: input.state ?? "upcoming",
+		detail: input.detail ?? null,
+		amount: input.amount ?? null,
+		days_after: input.days_after ?? null,
+		children: input.children ?? [],
+	};
+}
+
 async function refundTimeline(env: Env, paymentId: string) {
 	const id = paymentId.trim();
 	if (!id.startsWith("pay_")) throw new HttpError(400, "This payment cannot be opened.");
@@ -1734,43 +1802,108 @@ async function refundTimeline(env: Env, paymentId: string) {
 	const refunds = (Array.isArray(refundsResult.data.items) ? (refundsResult.data.items as Row[]) : []).sort((a, b) => num(a.created_at) - num(b.created_at));
 	const refund = refunds.at(-1) ?? null;
 	const now = Date.now();
-	const paidAt = typeof payment.created_at === "number" ? payment.created_at * 1000 : null;
-	const requestedAt = refund && typeof refund.created_at === "number" ? refund.created_at * 1000 : null;
+	const createdAt = msOf(payment.created_at);
+	const authorizedAt = msOf(payment.authorized_at) ?? createdAt;
+	const capturedAt = msOf(payment.captured_at) ?? createdAt;
+	const payStatus = String(payment.status ?? "").toLowerCase();
+	const captured = Boolean(payment.captured) || payStatus === "captured" || payStatus === "refunded";
+	const authorized = captured || payStatus === "authorized" || payStatus === "captured" || payStatus === "refunded";
+	const requestedAt = refund ? msOf(refund.created_at) : null;
 	const status = String(refund?.status ?? "");
 	const speed = String(refund?.speed_processed || refund?.speed_requested || "normal");
 	const expectedDays = speed === "instant" || speed === "optimum" ? 1 : 7;
 	const elapsed = requestedAt !== null ? (daysBetween(requestedAt, now) ?? 0) : 0;
-	const requestGap = daysBetween(paidAt, requestedAt);
+	const requestGap = daysBetween(createdAt, requestedAt);
 	const refundAcquirer = refund && refund.acquirer_data && typeof refund.acquirer_data === "object" ? (refund.acquirer_data as Row) : {};
+	const arn = String(refundAcquirer.arn || refundAcquirer.rrn || "") || null;
+	const refundAmount = refund ? Math.trunc(num(refund.amount)) : 0;
+	let refundState: string;
 	let processingState: string;
-	let creditState: string;
+	let processedState: string;
+	let refundLabel: string;
 	let processingDetail: string;
-	let creditDetail: string;
+	let processedDetail: string;
 	if (status === "processed") {
+		refundState = "done";
 		processingState = "done";
-		creditState = "done";
-		processingDetail = elapsed === 0 ? "Same day" : `${elapsed} days since the request`;
-		creditDetail = "Razorpay marked this processed";
+		processedState = "done";
+		refundLabel = "Refund (Processed)";
+		processingDetail = "Takes 3-5 working days";
+		processedDetail = "Amount will be credited to the customer's bank account within 5-7 working days after the refund has processed";
 	} else if (status === "failed") {
+		refundState = "failed";
 		processingState = "failed";
-		creditState = "failed";
+		processedState = "failed";
+		refundLabel = "Refund (Failed)";
 		processingDetail = "The refund failed";
-		creditDetail = "Money was not returned";
+		processedDetail = "Money was not returned";
 	} else if (refund) {
+		refundState = "current";
 		processingState = "current";
-		creditState = "upcoming";
-		processingDetail = elapsed === 0 ? "Same day" : `${elapsed} days so far`;
-		creditDetail = expectedDays === 1 ? "Usually the same day" : "Usually 5–7 working days";
+		processedState = "upcoming";
+		refundLabel = "Refund (Processing)";
+		processingDetail = "Takes 3-5 working days";
+		processedDetail = "Amount will be credited to the customer's bank account within 5-7 working days after the refund has processed";
 	} else {
+		refundState = "upcoming";
 		processingState = "upcoming";
-		creditState = "upcoming";
+		processedState = "upcoming";
+		refundLabel = "Refund";
 		processingDetail = "Waiting for a refund request";
-		creditDetail = "Waiting";
+		processedDetail = "Waiting";
+	}
+	let settlement: Row | null = null;
+	const settlementId = text(payment.settlement_id);
+	if (settlementId) {
+		const settlementResult = await razorpay(env, `/settlements/${encodeURIComponent(settlementId)}`);
+		if (settlementResult.ok) settlement = settlementResult.data;
+	}
+	let settlementAt = settlement ? msOf(settlement.created_at) : null;
+	const settlementStatus = String(settlement?.status ?? "").toLowerCase();
+	const settlementDone = settlementStatus === "processed" || settlementStatus === "settled" || Boolean(payment.settled);
+	if (capturedAt !== null && settlementAt === null) settlementAt = nextWorkingDay1pm(capturedAt);
+	let settlementState: string;
+	let settlementLabel: string;
+	let settlementDetail: string | null;
+	if (settlementDone) {
+		settlementState = "done";
+		settlementLabel = "Settlement (Processed)";
+		settlementDetail = "Deposited";
+	} else if (captured) {
+		settlementState = "current";
+		settlementLabel = "Settlement (To be processed)";
+		settlementDetail = settlementAt ? `To be deposited by: ${formatIst(settlementAt)}` : "Waiting for the next settlement cycle";
+	} else {
+		settlementState = "upcoming";
+		settlementLabel = "Settlement";
+		settlementDetail = "After the payment is captured";
+	}
+	const creditAt = requestedAt === null ? null : addWorkingDays(requestedAt, expectedDays === 1 ? 1 : 7);
+	const bankDone = Boolean(arn) || (status === "processed" && creditAt !== null && now >= creditAt);
+	let bankState: string;
+	let bankLabel: string;
+	let bankDetail: string;
+	if (status === "failed") {
+		bankState = "failed";
+		bankLabel = "Bank transfer failed";
+		bankDetail = "Money was not returned to the original account";
+	} else if (!refund) {
+		bankState = "upcoming";
+		bankLabel = "Credited to your bank";
+		bankDetail = "Starts after the refund is processed";
+	} else if (bankDone) {
+		bankState = "done";
+		bankLabel = "Credited to your bank";
+		bankDetail = "Refund should now be in the original account";
+	} else {
+		bankState = "current";
+		bankLabel = "Credited to your bank";
+		bankDetail = creditAt ? `Usually in the original account by ${formatIst(creditAt)}` : "Usually 5-7 working days after the refund is processed";
 	}
 	return {
 		payment_id: id,
 		amount: num(payment.amount),
-		refund_amount: refund ? num(refund.amount) : 0,
+		refund_amount: refundAmount,
 		currency: String(payment.currency || "INR"),
 		utr: utrOf(payment.acquirer_data),
 		refund_id: refund ? text(refund.id) : null,
@@ -1778,19 +1911,32 @@ async function refundTimeline(env: Env, paymentId: string) {
 		speed: refund ? speed : null,
 		days: refund ? elapsed : 0,
 		expected_days: refund ? expectedDays : 7,
-		arn: String(refundAcquirer.arn || refundAcquirer.rrn || "") || null,
+		arn,
 		steps: [
-			{ key: "captured", label: "Payment captured", at: paidAt === null ? null : new Date(paidAt).toISOString(), state: "done", detail: "Money received", days_after: null },
-			{
-				key: "requested",
-				label: "Refund requested",
-				at: requestedAt === null ? null : new Date(requestedAt).toISOString(),
-				state: refund ? "done" : "upcoming",
-				detail: requestGap === 0 ? "Same day as the payment" : requestGap !== null ? `${requestGap} days after the payment` : "Not requested",
+			timelineStep({ key: "created", label: "Payment created", at: createdAt, state: createdAt ? "done" : "upcoming" }),
+			timelineStep({ key: "authorized", label: "Payment authorized", at: authorized ? authorizedAt : null, state: authorized ? "done" : "upcoming" }),
+			timelineStep({ key: "captured", label: "Payment captured", at: captured ? capturedAt : null, state: captured ? "done" : authorized ? "current" : "upcoming" }),
+			timelineStep({
+				key: "refund",
+				label: refundLabel,
+				at: requestedAt,
+				state: refundState,
+				amount: refundAmount || null,
+				detail: requestedAt ? `Issued on ${formatIst(requestedAt)}` : null,
 				days_after: requestGap,
-			},
-			{ key: "processing", label: "Bank processing", at: null, state: processingState, detail: processingDetail, days_after: refund ? elapsed : null },
-			{ key: "credited", label: status !== "failed" ? "Credited to customer" : "Refund failed", at: null, state: creditState, detail: creditDetail, days_after: null },
+				children: [
+					timelineStep({ key: "refund_processing", label: "Refund processing", state: processingState, detail: processingDetail, days_after: refund ? elapsed : null }),
+					timelineStep({
+						key: "refund_processed",
+						label: status === "failed" ? "Refund failed" : "Refund processed",
+						at: status === "processed" ? requestedAt : null,
+						state: processedState,
+						detail: processedDetail,
+					}),
+				],
+			}),
+			timelineStep({ key: "settlement", label: settlementLabel, at: settlementDone ? settlementAt : null, state: settlementState, detail: settlementDetail }),
+			timelineStep({ key: "bank", label: bankLabel, at: bankDone ? creditAt : null, state: bankState, detail: bankDetail }),
 		],
 	};
 }
@@ -2138,6 +2284,19 @@ export function registerCroco(app: App) {
 		const user = await currentUser(c);
 		const rows = await many(c.env.DB, "SELECT * FROM juice_orders WHERE user_id = ? ORDER BY created_at DESC", user.id);
 		return (await syncOrderRefunds(c.env, rows)).map(orderOut);
+	}, { auth: true });
+
+	route("get", "/orders/:orderId/refund", "orders", "Refund status for my order", async (c) => {
+		const user = await currentUser(c);
+		const row = await one(c.env.DB, "SELECT * FROM juice_orders WHERE id = ? AND user_id = ?", c.req.param("orderId"), user.id);
+		if (!row) throw new HttpError(404, "Order not found.");
+		const paymentId = text(row.payment_id);
+		if (!paymentId?.startsWith("pay_")) throw new HttpError(400, "No refund on this order.");
+		try {
+			return await refundTimeline(c.env, paymentId);
+		} catch (error) {
+			paymentError(error);
+		}
 	}, { auth: true });
 
 	route(
