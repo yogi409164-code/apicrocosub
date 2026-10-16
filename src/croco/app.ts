@@ -1283,6 +1283,53 @@ function orderOut(row: Row) {
 	};
 }
 
+function refundStatusFromRefund(refundStatus: string, payment?: Row | null) {
+	const state = String(refundStatus || "").toLowerCase();
+	if (state === "failed") return "refund_failed";
+	if (state === "created" || state === "pending") return "refund_pending";
+	if (String(payment?.refund_status || "").toLowerCase() === "partial") return "partial_refund";
+	return "refunded";
+}
+
+function refundStatusFromPayment(payment: Row | null | undefined) {
+	if (!payment) return null;
+	const payState = String(payment.status || "").toLowerCase();
+	const flag = String(payment.refund_status || "").toLowerCase();
+	const amountRefunded = Math.trunc(num(payment.amount_refunded));
+	if (payState === "refunded" || flag === "full") return "refunded";
+	if (flag === "partial" || amountRefunded > 0) return "partial_refund";
+	return null;
+}
+
+async function markOrdersRefundStatus(db: D1Database, paymentId: string, status: string) {
+	const id = paymentId.trim();
+	const next = status.trim();
+	if (!id || !next) return;
+	await run(db, "UPDATE juice_orders SET payment_status = ? WHERE payment_id = ?", next, id);
+}
+
+async function syncOrderRefunds(env: Env, rows: Row[]) {
+	const ids = new Set(rows.map((row) => text(row.payment_id)).filter((id): id is string => Boolean(id?.startsWith("pay_"))));
+	if (!ids.size) return rows;
+	try {
+		const result = await razorpay(env, "/payments?count=100");
+		if (!result.ok) return rows;
+		const byId = new Map((Array.isArray(result.data.items) ? (result.data.items as Row[]) : []).map((item) => [String(item.id ?? ""), item]));
+		for (const row of rows) {
+			const paymentId = text(row.payment_id);
+			if (!paymentId) continue;
+			const next = refundStatusFromPayment(byId.get(paymentId));
+			if (next && next !== String(row.payment_status || "")) {
+				row.payment_status = next;
+				await markOrdersRefundStatus(env.DB, paymentId, next);
+			}
+		}
+	} catch {
+		// Keep the order list if Razorpay is unavailable.
+	}
+	return rows;
+}
+
 function adminOrderOut(row: Row, user: Row | null) {
 		return {
 		...orderOut(row),
@@ -2089,7 +2136,8 @@ export function registerCroco(app: App) {
 	// ---- orders ----
 	route("get", "/orders/me", "orders", "My orders", async (c) => {
 		const user = await currentUser(c);
-		return (await many(c.env.DB, "SELECT * FROM juice_orders WHERE user_id = ? ORDER BY created_at DESC", user.id)).map(orderOut);
+		const rows = await many(c.env.DB, "SELECT * FROM juice_orders WHERE user_id = ? ORDER BY created_at DESC", user.id);
+		return (await syncOrderRefunds(c.env, rows)).map(orderOut);
 	}, { auth: true });
 
 	route(
@@ -3192,7 +3240,9 @@ export function registerCroco(app: App) {
 			if (remaining < 100) throw new HttpError(400, "Nothing is left to refund.");
 			const refundResult = await razorpay(c.env, `/payments/${encodeURIComponent(paymentId)}/refund`, "POST", { amount: remaining });
 			if (!refundResult.ok) raiseGateway(refundResult, "Could not refund this payment.");
-			return { id: String(refundResult.data.id ?? ""), payment_id: paymentId, amount: Math.trunc(num(refundResult.data.amount, remaining)), status: String(refundResult.data.status || "processed") };
+			const refundStatus = String(refundResult.data.status || "processed");
+			await markOrdersRefundStatus(c.env.DB, paymentId, refundStatusFromRefund(refundStatus, payment));
+			return { id: String(refundResult.data.id ?? ""), payment_id: paymentId, amount: Math.trunc(num(refundResult.data.amount, remaining)), status: refundStatus };
 		} catch (error) {
 			paymentError(error);
 		}
