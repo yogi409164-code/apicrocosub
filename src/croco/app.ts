@@ -1276,6 +1276,9 @@ function orderOut(row: Row) {
 		delivery_window: String(row.delivery_window || DELIVERY_WINDOW),
 		delivery_type: String(row.delivery_type || "slot"),
 		proof_image: text(row.proof_image),
+		rating: numOrNull(row.rating),
+		payment_id: text(row.payment_id),
+		payment_status: String(row.payment_status || (String(row.payment_method || "").toUpperCase() === "UPI" ? "paid" : "cod")),
 		created_at: text(row.created_at),
 	};
 }
@@ -1324,7 +1327,7 @@ async function completedOrderCount(db: D1Database, userId: string): Promise<numb
 	return rows.filter((row) => String(row.status) !== "cancelled").length;
 }
 
-async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType: string, paymentMethod: string): Promise<Row> {
+async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType: string, paymentMethod: string, paymentId?: string | null): Promise<Row> {
 	const method = String(paymentMethod || "COD").toUpperCase();
 	if (method === "COD") {
 		const done = await completedOrderCount(db, String(user.id));
@@ -1337,8 +1340,8 @@ async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType
 	const id = uuid();
 	await run(
 		db,
-		`INSERT INTO juice_orders (id, user_id, items, subtotal, delivery_fee, total, payment_method, status, delivery_lat, delivery_lng, delivery_address, delivery_locality, delivery_date, delivery_window, delivery_type, created_at)
-		 VALUES (?, ?, ?, ?, 0, ?, ?, 'placed', ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO juice_orders (id, user_id, items, subtotal, delivery_fee, total, payment_method, status, delivery_lat, delivery_lng, delivery_address, delivery_locality, delivery_date, delivery_window, delivery_type, payment_id, payment_status, created_at)
+		 VALUES (?, ?, ?, ?, 0, ?, ?, 'placed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id,
 		user.id,
 		JSON.stringify(prepared.cleaned),
@@ -1352,6 +1355,8 @@ async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType
 		prepared.slotDate,
 		prepared.slotWindow,
 		prepared.kind,
+		paymentId ? String(paymentId) : null,
+		method === "UPI" ? "paid" : "cod",
 		nowIso(),
 	);
 	return (await one(db, "SELECT * FROM juice_orders WHERE id = ?", id))!;
@@ -2077,6 +2082,23 @@ export function registerCroco(app: App) {
 		{ auth: true, status: 201 },
 	);
 
+	route(
+		"patch",
+		"/orders/:orderId/rating",
+		"orders",
+		"Rate a juice order",
+		async (c) => {
+			const rating = reqNum(await bodyOf(c), "rating", { ge: 1, le: 5, integer: true });
+			const user = await currentUser(c);
+			const row = await one(c.env.DB, "SELECT * FROM juice_orders WHERE id = ? AND user_id = ?", c.req.param("orderId"), user.id);
+			if (!row) throw new HttpError(404, "Order not found.");
+			if (String(row.status) === "cancelled") throw new HttpError(400, "Cancelled orders cannot be rated.");
+			await run(c.env.DB, "UPDATE juice_orders SET rating = ? WHERE id = ?", rating, row.id);
+			return orderOut((await one(c.env.DB, "SELECT * FROM juice_orders WHERE id = ?", row.id))!);
+		},
+		{ auth: true },
+	);
+
 	// ---- payments ----
 	route(
 		"post",
@@ -2125,7 +2147,7 @@ export function registerCroco(app: App) {
 				const remote = await razorpay(c.env, `/orders/${encodeURIComponent(orderId)}`);
 				if (!remote.ok) raiseApi(remote);
 				if (Math.trunc(num(remote.data.amount)) !== expected) throw new HttpError(400, "Payment amount does not match the cart.");
-				const row = await createOrder(c.env.DB, user, items, deliveryType, "UPI");
+				const row = await createOrder(c.env.DB, user, items, deliveryType, "UPI", paymentId);
 				return { verified: true, order: orderOut(row) };
 		} catch (error) {
 				paymentError(error);

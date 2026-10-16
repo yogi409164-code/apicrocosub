@@ -248,6 +248,9 @@ export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS show_delivery_instant BOOLEAN NOT NULL DEFAULT TRUE`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS show_delivery_slot BOOLEAN NOT NULL DEFAULT TRUE`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_slots TEXT NOT NULL DEFAULT '[]'`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS rating INTEGER`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS payment_id VARCHAR(64)`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(24)`);
 }
 
 function schemaSql(schema: string): string {
@@ -380,6 +383,9 @@ CREATE TABLE IF NOT EXISTS ${s}.juice_orders (
   delivery_window VARCHAR(40) NOT NULL DEFAULT '6:00 AM – 10:00 AM',
   delivery_type VARCHAR(16) NOT NULL DEFAULT 'slot',
   proof_image TEXT,
+  rating INTEGER,
+  payment_id VARCHAR(64),
+  payment_status VARCHAR(24),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS ${s}.support_tickets (
