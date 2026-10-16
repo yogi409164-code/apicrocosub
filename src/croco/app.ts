@@ -1003,6 +1003,26 @@ async function latestRequest(db: D1Database, userId: unknown, status: string): P
 	return one(db, "SELECT * FROM plan_requests WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1", userId, status);
 }
 
+async function activatePaidRequest(db: D1Database, row: Row): Promise<void> {
+	const current = await latestRequest(db, row.user_id, "accepted");
+	const mode = String(row.upgrade_mode || "");
+	const tomorrow = addDays(todayIso(), 1);
+	let start = parseDate(row.starts_on) ?? tomorrow;
+	if (current) {
+		const [currentStart, currentEnd] = planWindow(current);
+		if (mode === "after_end") start = parseDate(row.starts_on) ?? addDays(currentEnd, 1);
+		else if (mode === "from_flow" && start < currentStart) start = currentStart;
+	}
+	await run(
+		db,
+		"UPDATE plan_requests SET starts_on = ?, ends_on = ?, status = 'accepted', decided_at = ? WHERE id = ?",
+		start,
+		addDays(start, planDays(row) - 1),
+		nowIso(),
+		row.id,
+	);
+}
+
 async function acceptedRows(db: D1Database, userId: unknown): Promise<Row[]> {
 	return many(db, "SELECT * FROM plan_requests WHERE user_id = ? AND status = 'accepted' ORDER BY created_at ASC", userId);
 }
@@ -2021,6 +2041,8 @@ export function registerCroco(app: App) {
 					nowIso(),
 				),
 			]);
+			const created = (await one(db, "SELECT * FROM plan_requests WHERE id = ?", id))!;
+			await activatePaidRequest(db, created);
 			return requestOut((await one(db, "SELECT * FROM plan_requests WHERE id = ?", id))!);
 		},
 		{ auth: true, status: 201 },
