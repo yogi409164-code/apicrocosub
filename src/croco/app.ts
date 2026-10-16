@@ -135,7 +135,12 @@ function parseDate(value: unknown): string | null {
 // ---- values ----
 
 function bool(value: unknown): boolean {
-	return value === true || value === 1 || value === "1";
+	if (value === true || value === 1) return true;
+	if (typeof value === "string") {
+		const normalized = value.trim().toLowerCase();
+		return normalized === "1" || normalized === "t" || normalized === "true" || normalized === "yes" || normalized === "on";
+	}
+	return false;
 }
 
 function num(value: unknown, fallback = 0): number {
@@ -656,8 +661,8 @@ function menuJuice(raw: unknown, index: number): {
 		description: String(row.description ?? "").trim() || null,
 		image_url: typeof row.image_url === "string" ? row.image_url : null,
 		archived: Boolean(row.archived),
-		in_poster: Boolean(row.in_poster),
-		in_plans: row.in_plans === false ? false : true,
+		in_poster: bool(row.in_poster),
+		in_plans: row.in_plans == null ? true : bool(row.in_plans),
 		offer_percent: Number.isFinite(offer) ? Math.min(Math.max(offer, 0), 90) : 0,
 		created_at: typeof row.created_at === "string" ? row.created_at : null,
 	};
@@ -2707,8 +2712,8 @@ export function registerCroco(app: App) {
 				c.env.DB,
 				"UPDATE juices SET price = ?, in_poster = ?, in_plans = ?, offer_percent = ? WHERE id = ?",
 				price ?? juice.price,
-				inPoster === null ? juice.in_poster : inPoster ? 1 : 0,
-				inPlans === null ? juice.in_plans : inPlans ? 1 : 0,
+				(inPoster ?? bool(juice.in_poster)) ? 1 : 0,
+				(inPlans ?? (juice.in_plans == null ? true : bool(juice.in_plans))) ? 1 : 0,
 				offer ?? juice.offer_percent,
 				juice.id,
 			);
