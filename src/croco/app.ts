@@ -49,6 +49,9 @@ const RESEND_SECONDS = 30;
 const PBKDF2_ROUNDS = 120_000;
 const IST_OFFSET_MS = 330 * 60_000;
 const STORE_ID = "default";
+const WELCOME_BONUS = 50;
+const BONUS_SOURCE = "bonus";
+const BONUS_NOTE = "₹50 welcome bonus";
 const DEFAULT_LAT = 12.9716;
 const DEFAULT_LNG = 77.5946;
 const MAX_IMAGE_BYTES = 100 * 1024 * 1024;
@@ -431,6 +434,7 @@ async function seedAll(db: D1Database): Promise<void> {
 	}
 	await syncCategories(db);
 	await storeRow(db);
+	await grantWelcomeBonusAll(db);
 }
 
 // ---- roles and users ----
@@ -553,6 +557,30 @@ async function findWalletUser(db: D1Database, identifier: string): Promise<Row |
 	);
 }
 
+async function grantWelcomeBonus(db: D1Database, user: Row): Promise<Row> {
+	const existing = await one(db, "SELECT id FROM wallet_entries WHERE user_id = ? AND source = ? LIMIT 1", user.id, BONUS_SOURCE);
+	if (existing) return user;
+	const rupees = moneyOf(WELCOME_BONUS);
+	const next = moneyOf(num(user.wallet_balance) + rupees);
+	await run(db, "UPDATE users SET wallet_balance = ? WHERE id = ?", next, user.id);
+	await run(
+		db,
+		"INSERT INTO wallet_entries (id, user_id, amount, kind, source, note, order_id, created_by, created_at) VALUES (?, ?, ?, 'credit', ?, ?, NULL, NULL, ?)",
+		uuid(),
+		user.id,
+		rupees,
+		BONUS_SOURCE,
+		BONUS_NOTE,
+		nowIso(),
+	);
+	return (await userById(db, String(user.id))) ?? user;
+}
+
+async function grantWelcomeBonusAll(db: D1Database) {
+	const users = await many(db, "SELECT * FROM users");
+	for (const user of users) await grantWelcomeBonus(db, user);
+}
+
 async function creditWallet(db: D1Database, identifier: string, amount: number, note: string | null, createdBy: string | null) {
 	const rupees = moneyOf(amount);
 	if (rupees <= 0) throw new HttpError(400, "Enter an amount greater than zero.");
@@ -644,7 +672,7 @@ async function currentUser(c: Ctx): Promise<Row> {
 	if (!userId) throw new HttpError(401, "Session expired. Sign in again.");
 	const user = await findUser(c.env.DB, userId);
 	if (!user) throw new HttpError(401, "Account not found.");
-	return user;
+	return grantWelcomeBonus(c.env.DB, user);
 }
 
 async function currentAdmin(c: Ctx): Promise<Row> {
@@ -654,7 +682,8 @@ async function currentAdmin(c: Ctx): Promise<Row> {
 }
 
 async function authResponse(c: Ctx, user: Row) {
-	return { access_token: await createAccessToken(c.env, String(user.id)), token_type: "bearer", user: await userOut(c.env.DB, user) };
+	const credited = await grantWelcomeBonus(c.env.DB, user);
+	return { access_token: await createAccessToken(c.env, String(credited.id)), token_type: "bearer", user: await userOut(c.env.DB, credited) };
 }
 
 // ---- catalog ----
