@@ -136,11 +136,16 @@ function parseDate(value: unknown): string | null {
 
 function bool(value: unknown): boolean {
 	if (value === true || value === 1) return true;
+	if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) return bool(value.toString("utf8"));
 	if (typeof value === "string") {
 		const normalized = value.trim().toLowerCase();
 		return normalized === "1" || normalized === "t" || normalized === "true" || normalized === "yes" || normalized === "on";
 	}
 	return false;
+}
+
+function sqlBool(value: boolean): "TRUE" | "FALSE" {
+	return value ? "TRUE" : "FALSE";
 }
 
 function num(value: unknown, fallback = 0): number {
@@ -580,7 +585,7 @@ function mlFromName(name: string): number | null {
 	return match ? Number(match[1]) : null;
 }
 
-function juiceOut(row: Row) {
+function juiceOut(row: Row, flags?: { in_poster?: boolean; in_plans?: boolean; archived?: boolean }) {
 	return {
 		id: String(row.id),
 		name: String(row.name ?? ""),
@@ -589,9 +594,9 @@ function juiceOut(row: Row) {
 		price: num(row.price),
 		description: text(row.description),
 		image_url: text(row.image_url),
-		archived: bool(row.archived),
-		in_poster: bool(row.in_poster),
-		in_plans: row.in_plans == null ? true : bool(row.in_plans),
+		archived: flags?.archived ?? bool(row.archived),
+		in_poster: flags?.in_poster ?? bool(row.in_poster ?? row.inPoster),
+		in_plans: flags?.in_plans ?? (row.in_plans == null && row.inPlans == null ? true : bool(row.in_plans ?? row.inPlans)),
 		offer_percent: num(row.offer_percent),
 		ml: row.ml == null ? mlFromName(String(row.name ?? "")) : num(row.ml),
 		created_at: text(row.created_at),
@@ -2568,7 +2573,7 @@ export function registerCroco(app: App) {
 			const id = uuid();
 			await run(
 				db,
-				"INSERT INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, ml, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, ?::boolean, ?::boolean, ?, ?, ?)",
+				`INSERT INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, ml, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, ${sqlBool(input.in_poster)}, ${sqlBool(input.in_plans)}, ?, ?, ?)`,
 				id,
 				name,
 				category,
@@ -2576,14 +2581,12 @@ export function registerCroco(app: App) {
 				input.price,
 				input.description?.trim() || null,
 				await normalizeStoredImage(db, input.image_url),
-				input.in_poster ? "true" : "false",
-				input.in_plans ? "true" : "false",
 				input.offer_percent,
 				mlFromName(name),
 				nowIso(),
 			);
 			await ensureCategory(db, category);
-			return juiceOut(await juiceById(db, id));
+			return juiceOut(await juiceById(db, id), { in_poster: input.in_poster, in_plans: input.in_plans });
 		},
 		{ auth: true, status: 201 },
 	);
@@ -2613,16 +2616,13 @@ export function registerCroco(app: App) {
 			if (existing) {
 				await run(
 					db,
-					"UPDATE juices SET name = ?, category = ?, sku = ?, price = ?, description = ?, image_url = ?, archived = ?::boolean, in_poster = ?::boolean, in_plans = ?::boolean, offer_percent = ?, ml = ? WHERE id = ?",
+					`UPDATE juices SET name = ?, category = ?, sku = ?, price = ?, description = ?, image_url = ?, archived = ${sqlBool(input.archived)}, in_poster = ${sqlBool(input.in_poster)}, in_plans = ${sqlBool(input.in_plans)}, offer_percent = ?, ml = ? WHERE id = ?`,
 					input.name,
 					input.category,
 					input.sku,
 					input.price,
 					input.description,
 					image,
-					input.archived ? "true" : "false",
-					input.in_poster ? "true" : "false",
-					input.in_plans ? "true" : "false",
 					input.offer_percent,
 					mlFromName(input.name),
 					id,
@@ -2631,7 +2631,7 @@ export function registerCroco(app: App) {
 			} else {
 				await run(
 					db,
-					"INSERT INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, ml, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?::boolean, ?::boolean, ?::boolean, ?, ?, ?)",
+					`INSERT INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, ml, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ${sqlBool(input.archived)}, ${sqlBool(input.in_poster)}, ${sqlBool(input.in_plans)}, ?, ?, ?)`,
 					id,
 					input.name,
 					input.category,
@@ -2639,9 +2639,6 @@ export function registerCroco(app: App) {
 					input.price,
 					input.description,
 					image,
-					input.archived ? "true" : "false",
-					input.in_poster ? "true" : "false",
-					input.in_plans ? "true" : "false",
 					input.offer_percent,
 					mlFromName(input.name),
 					input.created_at || nowIso(),
@@ -2676,21 +2673,19 @@ export function registerCroco(app: App) {
 			const category = input.category.trim() || "Juices";
 			await run(
 				db,
-				"UPDATE juices SET name = ?, category = ?, sku = ?, price = ?, description = ?, image_url = ?, in_poster = ?::boolean, in_plans = ?::boolean, offer_percent = ?, ml = ? WHERE id = ?",
+				`UPDATE juices SET name = ?, category = ?, sku = ?, price = ?, description = ?, image_url = ?, in_poster = ${sqlBool(input.in_poster)}, in_plans = ${sqlBool(input.in_plans)}, offer_percent = ?, ml = ? WHERE id = ?`,
 				name,
 				category,
 				input.sku?.trim() || null,
 				input.price,
 				input.description?.trim() || null,
 				await normalizeStoredImage(db, input.image_url),
-				input.in_poster ? "true" : "false",
-				input.in_plans ? "true" : "false",
 				input.offer_percent,
 				mlFromName(name),
 				juice.id,
 			);
 			await ensureCategory(db, category);
-			return juiceOut(await juiceById(db, String(juice.id)));
+			return juiceOut(await juiceById(db, String(juice.id)), { in_poster: input.in_poster, in_plans: input.in_plans });
 		},
 		{ auth: true },
 	);
@@ -2708,16 +2703,16 @@ export function registerCroco(app: App) {
 			const offer = optNum(body, "offer_percent", { ge: 0, le: 90 });
 			await currentAdmin(c);
 			const juice = await juiceById(c.env.DB, c.req.param("juiceId"));
+			const nextPoster = inPoster ?? bool(juice.in_poster);
+			const nextPlans = inPlans ?? (juice.in_plans == null ? true : bool(juice.in_plans));
 			await run(
 				c.env.DB,
-				"UPDATE juices SET price = ?, in_poster = ?::boolean, in_plans = ?::boolean, offer_percent = ? WHERE id = ?",
+				`UPDATE juices SET price = ?, in_poster = ${sqlBool(nextPoster)}, in_plans = ${sqlBool(nextPlans)}, offer_percent = ? WHERE id = ?`,
 				price ?? juice.price,
-				(inPoster ?? bool(juice.in_poster)) ? "true" : "false",
-				(inPlans ?? (juice.in_plans == null ? true : bool(juice.in_plans))) ? "true" : "false",
 				offer ?? juice.offer_percent,
 				juice.id,
 			);
-			return juiceOut(await juiceById(c.env.DB, String(juice.id)));
+			return juiceOut(await juiceById(c.env.DB, String(juice.id)), { in_poster: nextPoster, in_plans: nextPlans });
 		},
 		{ auth: true },
 	);
