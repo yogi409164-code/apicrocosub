@@ -38,7 +38,7 @@ const SYSTEM_ROLES = ["admin", "customer"];
 const ROLE_NAME = /^[a-z][a-z0-9_]{1,31}$/;
 const DELIVERY_WINDOW = "6:00 AM – 10:00 AM";
 const ORDER_STATUSES = ["placed", "confirmed", "delivered", "cancelled"];
-const MARK_STATUSES = ["pending", "delivered", "not_delivered"];
+const MARK_STATUSES = ["pending", "picked", "delivered", "not_delivered"];
 const TICKET_KINDS = ["order", "subscription", "other"];
 const UPGRADE_MODES = ["", "after_end", "from_flow"];
 const MAX_SAVED_ADDRESSES = 10;
@@ -2588,7 +2588,7 @@ export function registerCroco(app: App) {
 			...counts,
 			delivered_today: marks.filter((row) => row.status === "delivered").length,
 			not_delivered_today: marks.filter((row) => row.status === "not_delivered").length,
-			pending_delivery_today: marks.filter((row) => row.status === "pending").length,
+			pending_delivery_today: marks.filter((row) => row.status === "pending" || row.status === "picked").length,
 			orders: orders.length,
 			placed_orders: orders.filter((row) => row.status === "placed").length,
 			open_orders: orders.filter((row) => row.status === "placed" || row.status === "confirmed").length,
