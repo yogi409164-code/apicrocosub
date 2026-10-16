@@ -2725,6 +2725,12 @@ export function registerCroco(app: App) {
 	};
 	route("post", "/admin/juices/:juiceId/archive", "admin", "Hide a juice", (c) => setArchived(c, true), { auth: true });
 	route("post", "/admin/juices/:juiceId/restore", "admin", "Show a juice again", (c) => setArchived(c, false), { auth: true });
+	route("delete", "/admin/juices/:juiceId", "admin", "Delete a juice", async (c) => {
+		await currentAdmin(c);
+		const juice = await juiceById(c.env.DB, c.req.param("juiceId"));
+		await run(c.env.DB, "DELETE FROM juices WHERE id = ?", juice.id);
+		return { ok: true };
+	}, { auth: true });
 
 	route("get", "/admin/categories", "admin", "Category order", async (c) => {
 		await currentAdmin(c);
