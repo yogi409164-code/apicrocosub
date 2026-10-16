@@ -3481,7 +3481,7 @@ export function registerCroco(app: App) {
 	route("post", "/admin/wallet/credit", "admin", "Add wallet money", async (c) => {
 		const admin = await currentAdmin(c);
 		const body = await bodyOf(c);
-		const identifier = reqStr(body, "identifier", 255);
+		const identifier = reqStr(body, "identifier", 1, 255);
 		const amount = reqNum(body, "amount", { ge: 0.01 });
 		const note = optStr(body, "note", 240);
 		return creditWallet(c.env.DB, identifier, amount, note, String(admin.id));
