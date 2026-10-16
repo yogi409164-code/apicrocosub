@@ -29,6 +29,7 @@ const ADMIN_PAGES = [
 	"payments",
 	"tickets",
 	"delivery",
+	"slots",
 	"data",
 	"maps",
 	"settings",
@@ -767,7 +768,72 @@ async function listPlans(db: D1Database): Promise<Row[]> {
 	return many(db, "SELECT * FROM plans ORDER BY position ASC, name ASC");
 }
 
+const SLOT_KINDS = ["instant", "next_day", "pre", "holiday", "book"] as const;
+const SLOT_META: Record<string, { label: string; offset: number; window: string }> = {
+	instant: { label: "Instant", offset: 0, window: "Instant" },
+	next_day: { label: "Next day", offset: 1, window: DELIVERY_WINDOW },
+	pre: { label: "Pre-order", offset: 2, window: DELIVERY_WINDOW },
+	holiday: { label: "Next day holiday", offset: 1, window: "Holiday" },
+	book: { label: "Next day book", offset: 1, window: DELIVERY_WINDOW },
+};
+
+function defaultDeliverySlots(showInstant = true, showSlot = true): Row[] {
+	return [
+		{ id: "instant", kind: "instant", label: SLOT_META.instant.label, offset_days: 0, window: SLOT_META.instant.window, visible: showInstant },
+		{ id: "next_day", kind: "next_day", label: SLOT_META.next_day.label, offset_days: 1, window: SLOT_META.next_day.window, visible: showSlot },
+	];
+}
+
+function normalizeDeliverySlots(raw: unknown, showInstant = true, showSlot = true): Row[] {
+	const rows = typeof raw === "string" ? jsonList(raw) : Array.isArray(raw) ? (raw as Row[]) : [];
+	const seen = new Set<string>();
+	const slots: Row[] = [];
+	for (const item of rows) {
+		if (!item || typeof item !== "object") continue;
+		const kind = String(item.kind || "");
+		if (!SLOT_KINDS.includes(kind as (typeof SLOT_KINDS)[number])) continue;
+		const meta = SLOT_META[kind];
+		const id = String(item.id || "").trim().slice(0, 64) || `${kind}_${slots.length}`;
+		if (seen.has(id)) continue;
+		seen.add(id);
+		const offsetRaw = Math.trunc(num(item.offset_days, meta.offset));
+		const offset = kind === "instant" ? 0 : Math.max(0, Math.min(14, Number.isFinite(offsetRaw) ? offsetRaw : meta.offset));
+		slots.push({
+			id,
+			kind,
+			label: String(item.label || meta.label).trim().slice(0, 80) || meta.label,
+			offset_days: offset,
+			window: String(item.window || meta.window).trim().slice(0, 80) || meta.window,
+			visible: item.visible !== false,
+		});
+	}
+	return slots.length ? slots : defaultDeliverySlots(showInstant, showSlot);
+}
+
+function slotsForStore(row: Row): Row[] {
+	const showInstant = row.show_delivery_instant == null ? true : bool(row.show_delivery_instant);
+	const showSlot = row.show_delivery_slot == null ? true : bool(row.show_delivery_slot);
+	return normalizeDeliverySlots(row.delivery_slots, showInstant, showSlot);
+}
+
+function resolveDeliverySlot(store: Row, deliveryType: string): Row {
+	const slots = slotsForStore(store);
+	const wanted = String(deliveryType || "slot").trim();
+	let match = slots.find((item) => String(item.id) === wanted);
+	if (!match && wanted === "slot") {
+		match = slots.find((item) => item.visible !== false && ["next_day", "pre", "book"].includes(String(item.kind)));
+	}
+	if (!match && wanted === "instant") {
+		match = slots.find((item) => String(item.kind) === "instant");
+	}
+	if (!match) throw new HttpError(400, "Choose a delivery slot.");
+	if (match.visible === false) throw new HttpError(400, `${match.label} is not available.`);
+	if (String(match.kind) === "holiday") throw new HttpError(400, `${match.label} is a holiday. Pick another day.`);
+	return match;
+}
+
 function storeOut(row: Row) {
+	const slots = slotsForStore(row);
 	return {
 		id: String(row.id),
 		name: String(row.name ?? "CrocoSip Store"),
@@ -778,6 +844,9 @@ function storeOut(row: Row) {
 		distance_km: num(row.distance_km) || 10,
 		custom_discount_percent: row.custom_discount_percent == null ? 20 : num(row.custom_discount_percent),
 		cart_min_order: row.cart_min_order == null ? 0 : num(row.cart_min_order),
+		show_delivery_instant: slots.some((item) => item.visible !== false && item.kind === "instant"),
+		show_delivery_slot: slots.some((item) => item.visible !== false && ["next_day", "pre", "book"].includes(String(item.kind))),
+		delivery_slots: slots,
 	};
 }
 
@@ -1176,17 +1245,33 @@ async function prepareOrder(db: D1Database, user: Row, items: Row[], deliveryTyp
 	const subtotal = Math.round(cleaned.reduce((sum, item) => sum + item.price * item.qty, 0) * 100) / 100;
 	const minimum = num(store.cart_min_order);
 	if (subtotal < minimum) throw new HttpError(400, `Minimum order is ₹${minimum}.`);
-	const kind = deliveryType === "instant" ? "instant" : "slot";
+	const slot = resolveDeliverySlot(store, deliveryType);
+	const kind = String(slot.kind) === "instant" ? "instant" : String(slot.kind);
 	return {
 		cleaned,
 		subtotal,
 		kind,
-		slotDate: kind === "instant" ? todayIso() : addDays(todayIso(), 1),
-		slotWindow: kind === "instant" ? "Instant" : DELIVERY_WINDOW,
+		slotDate: addDays(todayIso(), Math.trunc(num(slot.offset_days))),
+		slotWindow: kind === "instant" ? "Instant" : String(slot.window || DELIVERY_WINDOW),
 	};
 }
 
+const COD_UNLOCK_ORDERS = 3;
+
+async function completedOrderCount(db: D1Database, userId: string): Promise<number> {
+	const rows = await many(db, "SELECT status FROM juice_orders WHERE user_id = ?", userId);
+	return rows.filter((row) => String(row.status) !== "cancelled").length;
+}
+
 async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType: string, paymentMethod: string): Promise<Row> {
+	const method = String(paymentMethod || "COD").toUpperCase();
+	if (method === "COD") {
+		const done = await completedOrderCount(db, String(user.id));
+		if (done < COD_UNLOCK_ORDERS) {
+			const left = COD_UNLOCK_ORDERS - done;
+			throw new HttpError(400, `Pay with UPI for your first ${COD_UNLOCK_ORDERS} orders. COD unlocks after that (${left} more).`);
+		}
+	}
 	const prepared = await prepareOrder(db, user, items, deliveryType);
 	const id = uuid();
 	await run(
@@ -1198,7 +1283,7 @@ async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType
 		JSON.stringify(prepared.cleaned),
 		prepared.subtotal,
 		prepared.subtotal,
-		paymentMethod || "COD",
+		method,
 		user.location_lat,
 		user.location_lng,
 		user.location_address,
@@ -1924,7 +2009,7 @@ export function registerCroco(app: App) {
 		async (c) => {
 			const body = await bodyOf(c);
 			const items = validOrderItems(body, "items", true);
-			const deliveryType = literal(body, "delivery_type", ["instant", "slot"], "slot");
+			const deliveryType = optStr(body, "delivery_type", 64, "slot") ?? "slot";
 			const user = await currentUser(c);
 			return orderOut(await createOrder(c.env.DB, user, items, deliveryType, "COD"));
 		},
@@ -1943,7 +2028,7 @@ export function registerCroco(app: App) {
 			const currency = optStr(body, "currency", undefined, "INR") ?? "INR";
 			const receipt = optStr(body, "receipt", 40);
 			const items = validOrderItems(body, "items", false);
-			const deliveryType = literal(body, "delivery_type", ["instant", "slot"], "slot");
+			const deliveryType = optStr(body, "delivery_type", 64, "slot") ?? "slot";
 			const user = await currentUser(c);
 			try {
 				const paise = await amountPaise(c.env.DB, user, items, deliveryType, amount);
@@ -1969,7 +2054,7 @@ export function registerCroco(app: App) {
 			const paymentId = reqStr(body, "razorpay_payment_id", 1);
 			const signature = reqStr(body, "razorpay_signature", 1);
 			const items = validOrderItems(body, "items", false);
-			const deliveryType = literal(body, "delivery_type", ["instant", "slot"], "slot");
+			const deliveryType = optStr(body, "delivery_type", 64, "slot") ?? "slot";
 			const user = await currentUser(c);
 			try {
 				const { secret } = razorpayKeys(c.env);
@@ -2893,6 +2978,47 @@ export function registerCroco(app: App) {
 		await currentAdmin(c);
 		await storeRow(c.env.DB);
 		await run(c.env.DB, "UPDATE store_settings SET cart_min_order = ? WHERE id = ?", Math.max(0, Math.min(10000, Math.round(amount * 100) / 100)), STORE_ID);
+		return storeOut(await storeRow(c.env.DB));
+	}, { auth: true });
+
+	route("patch", "/admin/store/delivery-options", "admin", "Show or hide cart delivery options", async (c) => {
+		const body = await bodyOf(c);
+		const showInstant = optBool(body, "show_delivery_instant");
+		const showSlot = optBool(body, "show_delivery_slot");
+		await currentAdmin(c);
+		const store = await storeRow(c.env.DB);
+		const nextInstant = showInstant ?? (store.show_delivery_instant == null ? true : bool(store.show_delivery_instant));
+		const nextSlot = showSlot ?? (store.show_delivery_slot == null ? true : bool(store.show_delivery_slot));
+		if (!nextInstant && !nextSlot) throw new HttpError(400, "Keep at least one delivery option visible.");
+		const slots = slotsForStore(store).map((item) => {
+			if (item.kind === "instant") return { ...item, visible: nextInstant };
+			if (item.kind === "next_day" && item.id === "next_day") return { ...item, visible: nextSlot };
+			return item;
+		});
+		await run(
+			c.env.DB,
+			`UPDATE store_settings SET show_delivery_instant = ${sqlBool(nextInstant)}, show_delivery_slot = ${sqlBool(nextSlot)}, delivery_slots = ? WHERE id = ?`,
+			JSON.stringify(slots),
+			STORE_ID,
+		);
+		return storeOut(await storeRow(c.env.DB));
+	}, { auth: true });
+
+	route("patch", "/admin/store/delivery-slots", "admin", "Create cart delivery slots", async (c) => {
+		const body = await bodyOf(c);
+		await currentAdmin(c);
+		await storeRow(c.env.DB);
+		const slots = normalizeDeliverySlots(listField(body, "slots", []));
+		const bookable = slots.filter((item) => item.visible !== false && String(item.kind) !== "holiday");
+		if (!bookable.length) throw new HttpError(400, "Keep at least one bookable slot visible.");
+		const showInstant = slots.some((item) => item.visible !== false && item.kind === "instant");
+		const showSlot = slots.some((item) => item.visible !== false && ["next_day", "pre", "book"].includes(String(item.kind)));
+		await run(
+			c.env.DB,
+			`UPDATE store_settings SET show_delivery_instant = ${sqlBool(showInstant)}, show_delivery_slot = ${sqlBool(showSlot)}, delivery_slots = ? WHERE id = ?`,
+			JSON.stringify(slots),
+			STORE_ID,
+		);
 		return storeOut(await storeRow(c.env.DB));
 	}, { auth: true });
 

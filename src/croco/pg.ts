@@ -47,6 +47,8 @@ const BOOL_KEYS = new Set([
 	"popular",
 	"special_access",
 	"started",
+	"show_delivery_instant",
+	"show_delivery_slot",
 ]);
 
 function asBool(value: unknown): boolean {
@@ -243,6 +245,9 @@ export async function schemaTables(sql: Sql, schema: string): Promise<string[]> 
 export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(schemaSql(schema)).simple();
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.plans ADD COLUMN IF NOT EXISTS items TEXT NOT NULL DEFAULT ''`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS show_delivery_instant BOOLEAN NOT NULL DEFAULT TRUE`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS show_delivery_slot BOOLEAN NOT NULL DEFAULT TRUE`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_slots TEXT NOT NULL DEFAULT '[]'`);
 }
 
 function schemaSql(schema: string): string {
@@ -313,7 +318,10 @@ CREATE TABLE IF NOT EXISTS ${s}.store_settings (
   longitude DOUBLE PRECISION NOT NULL DEFAULT 77.5946,
   distance_km DOUBLE PRECISION NOT NULL DEFAULT 10,
   custom_discount_percent DOUBLE PRECISION NOT NULL DEFAULT 20,
-  cart_min_order DOUBLE PRECISION NOT NULL DEFAULT 0
+  cart_min_order DOUBLE PRECISION NOT NULL DEFAULT 0,
+  show_delivery_instant BOOLEAN NOT NULL DEFAULT TRUE,
+  show_delivery_slot BOOLEAN NOT NULL DEFAULT TRUE,
+  delivery_slots TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS ${s}.plans (
   id VARCHAR(64) PRIMARY KEY,
