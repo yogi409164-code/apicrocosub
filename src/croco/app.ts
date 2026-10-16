@@ -768,9 +768,11 @@ async function listPlans(db: D1Database): Promise<Row[]> {
 	return many(db, "SELECT * FROM plans ORDER BY position ASC, name ASC");
 }
 
-const SLOT_KINDS = ["instant", "next_day", "pre", "holiday", "book"] as const;
+const SLOT_LEAD_HOURS = 5;
+const SLOT_KINDS = ["instant", "today", "next_day", "pre", "holiday", "book"] as const;
 const SLOT_META: Record<string, { label: string; offset: number; window: string }> = {
 	instant: { label: "Instant", offset: 0, window: "Instant" },
+	today: { label: "Today", offset: 0, window: DELIVERY_WINDOW },
 	next_day: { label: "Next day", offset: 1, window: DELIVERY_WINDOW },
 	pre: { label: "Pre-order", offset: 2, window: DELIVERY_WINDOW },
 	holiday: { label: "Next day holiday", offset: 1, window: "Holiday" },
@@ -780,6 +782,7 @@ const SLOT_META: Record<string, { label: string; offset: number; window: string 
 function defaultDeliverySlots(showInstant = true, showSlot = true): Row[] {
 	return [
 		{ id: "instant", kind: "instant", label: SLOT_META.instant.label, offset_days: 0, window: SLOT_META.instant.window, visible: showInstant },
+		{ id: "today", kind: "today", label: SLOT_META.today.label, offset_days: 0, window: SLOT_META.today.window, visible: showSlot },
 		{ id: "next_day", kind: "next_day", label: SLOT_META.next_day.label, offset_days: 1, window: SLOT_META.next_day.window, visible: showSlot },
 	];
 }
@@ -797,7 +800,7 @@ function normalizeDeliverySlots(raw: unknown, showInstant = true, showSlot = tru
 		if (seen.has(id)) continue;
 		seen.add(id);
 		const offsetRaw = Math.trunc(num(item.offset_days, meta.offset));
-		const offset = kind === "instant" ? 0 : Math.max(0, Math.min(14, Number.isFinite(offsetRaw) ? offsetRaw : meta.offset));
+		const offset = kind === "instant" || kind === "today" ? 0 : Math.max(0, Math.min(14, Number.isFinite(offsetRaw) ? offsetRaw : meta.offset));
 		slots.push({
 			id,
 			kind,
@@ -813,7 +816,62 @@ function normalizeDeliverySlots(raw: unknown, showInstant = true, showSlot = tru
 function slotsForStore(row: Row): Row[] {
 	const showInstant = row.show_delivery_instant == null ? true : bool(row.show_delivery_instant);
 	const showSlot = row.show_delivery_slot == null ? true : bool(row.show_delivery_slot);
-	return normalizeDeliverySlots(row.delivery_slots, showInstant, showSlot);
+	const slots = normalizeDeliverySlots(row.delivery_slots, showInstant, showSlot);
+	if (slots.some((item) => item.kind === "today" || (num(item.offset_days) === 0 && item.kind !== "instant"))) return slots;
+	const today = defaultDeliverySlots(showInstant, showSlot).find((item) => item.kind === "today");
+	if (!today) return slots;
+	const instantAt = slots.findIndex((item) => item.kind === "instant");
+	slots.splice(instantAt >= 0 ? instantAt + 1 : 0, 0, today);
+	return slots;
+}
+
+function parseClock(part: string): { hour: number; minute: number } | null {
+	const match = part.trim().toUpperCase().replace(/\s+/g, " ").match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?$/);
+	if (!match) return null;
+	let hour = Number(match[1]);
+	const minute = Number(match[2] || 0);
+	const period = match[3];
+	if (period === "AM") hour = hour === 12 ? 0 : hour;
+	else if (period === "PM") hour = hour === 12 ? 12 : hour + 12;
+	if (hour > 23 || minute > 59) return null;
+	return { hour, minute };
+}
+
+function parseSlotWindow(window: string) {
+	const raw = String(window || "").trim();
+	if (!raw || raw.toLowerCase() === "instant" || raw.toLowerCase() === "holiday") return { startHour: 6, startMinute: 0, endHour: 10, endMinute: 0 };
+	const parts = raw.split(/\s*[–—-]\s*/);
+	const start = parseClock(parts[0] || "");
+	const end = parseClock(parts[1] || parts[0] || "");
+	if (!start || !end) return { startHour: 6, startMinute: 0, endHour: 10, endMinute: 0 };
+	return { startHour: start.hour, startMinute: start.minute, endHour: end.hour, endMinute: end.minute };
+}
+
+function slotBounds(slot: Row): { start: number; end: number } {
+	const day = addDays(todayIso(), Math.trunc(num(slot.offset_days)));
+	const [year, month, date] = day.split("-").map(Number);
+	const window = parseSlotWindow(String(slot.window || ""));
+	let start = Date.UTC(year, (month || 1) - 1, date || 1, window.startHour, window.startMinute) - IST_OFFSET_MS;
+	let end = Date.UTC(year, (month || 1) - 1, date || 1, window.endHour, window.endMinute) - IST_OFFSET_MS;
+	if (end <= start) end += 24 * 60 * 60 * 1000;
+	return { start, end };
+}
+
+function slotIsLive(slot: Row, at = Date.now()): boolean {
+	if (slot.visible === false) return false;
+	const { start, end } = slotBounds(slot);
+	return at >= start - SLOT_LEAD_HOURS * 60 * 60 * 1000 && at < end;
+}
+
+function liveCartSlots(slots: Row[], at = Date.now()): Row[] {
+	const live = slots.filter((item) => slotIsLive(item, at));
+	if (live.length) return live;
+	const upcoming = slots
+		.filter((item) => item.visible !== false && slotBounds(item).end > at)
+		.sort((left, right) => slotBounds(left).start - slotBounds(right).start);
+	if (!upcoming.length) return [];
+	const firstStart = slotBounds(upcoming[0]).start;
+	return upcoming.filter((item) => slotBounds(item).start === firstStart);
 }
 
 function resolveDeliverySlot(store: Row, deliveryType: string): Row {
@@ -821,7 +879,7 @@ function resolveDeliverySlot(store: Row, deliveryType: string): Row {
 	const wanted = String(deliveryType || "slot").trim();
 	let match = slots.find((item) => String(item.id) === wanted);
 	if (!match && wanted === "slot") {
-		match = slots.find((item) => item.visible !== false && ["next_day", "pre", "book"].includes(String(item.kind)));
+		match = slots.find((item) => slotIsLive(item) && ["today", "next_day", "pre", "book"].includes(String(item.kind)));
 	}
 	if (!match && wanted === "instant") {
 		match = slots.find((item) => String(item.kind) === "instant");
@@ -829,6 +887,9 @@ function resolveDeliverySlot(store: Row, deliveryType: string): Row {
 	if (!match) throw new HttpError(400, "Choose a delivery slot.");
 	if (match.visible === false) throw new HttpError(400, `${match.label} is not available.`);
 	if (String(match.kind) === "holiday") throw new HttpError(400, `${match.label} is a holiday. Pick another day.`);
+	if (!liveCartSlots(slots).some((item) => String(item.id) === String(match.id))) {
+		throw new HttpError(400, `${match.label} opens ${SLOT_LEAD_HOURS} hours before the window.`);
+	}
 	return match;
 }
 
@@ -845,7 +906,7 @@ function storeOut(row: Row) {
 		custom_discount_percent: row.custom_discount_percent == null ? 20 : num(row.custom_discount_percent),
 		cart_min_order: row.cart_min_order == null ? 0 : num(row.cart_min_order),
 		show_delivery_instant: slots.some((item) => item.visible !== false && item.kind === "instant"),
-		show_delivery_slot: slots.some((item) => item.visible !== false && ["next_day", "pre", "book"].includes(String(item.kind))),
+		show_delivery_slot: slots.some((item) => item.visible !== false && ["today", "next_day", "pre", "book"].includes(String(item.kind))),
 		delivery_slots: slots,
 	};
 }
@@ -3012,7 +3073,7 @@ export function registerCroco(app: App) {
 		const bookable = slots.filter((item) => item.visible !== false && String(item.kind) !== "holiday");
 		if (!bookable.length) throw new HttpError(400, "Keep at least one bookable slot visible.");
 		const showInstant = slots.some((item) => item.visible !== false && item.kind === "instant");
-		const showSlot = slots.some((item) => item.visible !== false && ["next_day", "pre", "book"].includes(String(item.kind)));
+		const showSlot = slots.some((item) => item.visible !== false && ["today", "next_day", "pre", "book"].includes(String(item.kind)));
 		await run(
 			c.env.DB,
 			`UPDATE store_settings SET show_delivery_instant = ${sqlBool(showInstant)}, show_delivery_slot = ${sqlBool(showSlot)}, delivery_slots = ? WHERE id = ?`,
