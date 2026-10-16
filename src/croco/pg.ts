@@ -39,6 +39,24 @@ const TABLE_REF = new RegExp(`\\b(FROM|JOIN|INTO|UPDATE)(\\s+)(${APP_TABLES.join
 const INSERT_OR_IGNORE = /\bINSERT\s+OR\s+IGNORE\s+INTO\b/gi;
 // int8 and numeric arrive as strings from postgres.js.
 const NUMERIC_TYPES = new Set([20, 1700]);
+const BOOL_TYPE = 16;
+const BOOL_KEYS = new Set([
+	"archived",
+	"in_poster",
+	"in_plans",
+	"popular",
+	"special_access",
+	"started",
+]);
+
+function asBool(value: unknown): boolean {
+	if (value === true || value === 1) return true;
+	if (typeof value === "string") {
+		const normalized = value.trim().toLowerCase();
+		return normalized === "1" || normalized === "t" || normalized === "true" || normalized === "yes" || normalized === "on";
+	}
+	return false;
+}
 
 export function quoteIdent(name: string): string {
 	return `"${name.replaceAll('"', '""')}"`;
@@ -66,13 +84,19 @@ export function toPostgres(sql: string, schema: string): string {
 }
 
 function normalize(result: postgres.RowList<Row[]>): Row[] {
-	const numeric = (result.columns ?? []).filter((column) => NUMERIC_TYPES.has(column.type)).map((column) => column.name);
+	const columns = result.columns ?? [];
+	const numeric = columns.filter((column) => NUMERIC_TYPES.has(column.type)).map((column) => column.name);
+	const flags = columns.filter((column) => column.type === BOOL_TYPE).map((column) => column.name);
 	return result.map((row) => {
 		for (const [key, value] of Object.entries(row)) {
 			if (value instanceof Date) row[key] = Number.isNaN(value.getTime()) ? null : value.toISOString();
 		}
 		for (const name of numeric) {
 			if (row[name] !== null && row[name] !== undefined) row[name] = Number(row[name]);
+		}
+		const boolNames = new Set([...flags, ...Object.keys(row).filter((key) => BOOL_KEYS.has(key))]);
+		for (const name of boolNames) {
+			if (row[name] !== null && row[name] !== undefined) row[name] = asBool(row[name]);
 		}
 		return row;
 	});
