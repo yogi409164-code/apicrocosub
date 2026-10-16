@@ -25,7 +25,7 @@
 		"GOOGLE_BROWSER_CLIENT_ID": "1028343714410-g6fg3lop4r0kte460sgnu3lq8h7gd1r1.apps.googleusercontent.com",
 		"GOOGLE_ANDROID_CLIENT_ID": "1028343714410-bravnjrjce1u6pt8jlrom7320qgdtqgd.apps.googleusercontent.com",
 		"SECRET_KEY": "crocosip-dev-secret-change-before-production",
-		"FAST2SMS_API_KEY": "qJHs9Bk7XYRxgnD51zVuPSfoNO30QZiv6erUEaWbKtmFT8dp2jrEmqnxl85IdsvXuwUK7YF41eczSMoC",
+		"APITXT_API_KEY": "kCsW0vCzVt_-3T7uHb8KsjHav5BAwrXnKnSNqTDYlBc",
 		"RAZORPAY_KEY_ID": "rzp_live_TmsLTYaQaRWX6f",
 		"RAZORPAY_KEY_SECRET": "KUwrHobtwncJK17yKuCT4cRx",
 		"POSTGRES_PASSWORD": "AVNS_vYwTZHZZpPbenuXnZEa",

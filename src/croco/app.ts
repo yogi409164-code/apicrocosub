@@ -1453,15 +1453,42 @@ function notFoundOr400(error: unknown): never {
 
 // ---- outside services ----
 
+function indiaMobile(number: string): string {
+	return `91${number.replace(/\D/g, "").slice(-10)}`;
+}
+
+function smsDetail(payload: unknown, raw: string): string {
+	if (payload && typeof payload === "object") {
+		for (const key of ["message", "msg", "error", "description"] as const) {
+			const value = (payload as Row)[key];
+			if (typeof value === "string" && value.trim()) return value.trim();
+		}
+	}
+	return raw.trim();
+}
+
+function smsOk(payload: unknown): boolean {
+	if (!payload || typeof payload !== "object") return false;
+	const status = String((payload as Row).status ?? (payload as Row).type ?? "").trim().toLowerCase();
+	return status === "success" || status === "ok" || status === "1";
+}
+
 async function sendSms(env: Env, number: string, message: string): Promise<void> {
-	const key = setting(env, "FAST2SMS_API_KEY");
+	const key = setting(env, "APITXT_API_KEY") || setting(env, "APITXT_KEY");
 	if (!key) throw new HttpError(400, "SMS is not configured.");
+	const otp = message.match(/\b(\d{6})\b/)?.[1];
+	if (!otp) throw new HttpError(400, "Could not send the verification code.");
 	let response: Response;
 	try {
-		response = await fetch("https://www.fast2sms.com/dev/bulkV2", {
+		response = await fetch("https://www.apitxt.com/api/sendOTP", {
 			method: "POST",
-			headers: { authorization: key, "Content-Type": "application/x-www-form-urlencoded" },
-			body: new URLSearchParams({ route: "q", message, language: "english", flash: "0", numbers: number }),
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				authkey: key,
+				mobile: indiaMobile(number),
+				otp,
+				channel: "sms",
+			}),
 		});
 	} catch {
 		throw new HttpError(400, "Could not send the verification code.");
@@ -1473,10 +1500,8 @@ async function sendSms(env: Env, number: string, message: string): Promise<void>
 	} catch {
 		payload = null;
 	}
-	const detail = payload && typeof payload === "object" ? (payload as Row).message : undefined;
-	if (!response.ok) throw new HttpError(400, (detail ? String(detail) : raw) || "Could not send the verification code.");
-	if (!payload || typeof payload !== "object" || !(payload as Row).return) {
-		throw new HttpError(400, (typeof detail === "string" && detail) || "Could not send the verification code.");
+	if (!response.ok || !smsOk(payload)) {
+		throw new HttpError(400, smsDetail(payload, raw) || "Could not send the verification code.");
 	}
 }
 
