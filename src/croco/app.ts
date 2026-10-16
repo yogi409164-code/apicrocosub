@@ -604,7 +604,19 @@ async function creditWallet(db: D1Database, identifier: string, amount: number, 
 	return walletEntryOut(row, updated);
 }
 
-async function debitWallet(db: D1Database, user: Row, amount: number, note: string | null, orderId: string | null) {
+function rupeesFromPrice(price: string) {
+	const n = Number(String(price).replace(/[^\d.]/g, ""));
+	return moneyOf(Number.isFinite(n) ? n : 0);
+}
+
+async function debitWallet(
+	db: D1Database,
+	user: Row,
+	amount: number,
+	note: string | null,
+	orderId: string | null,
+	source = "order",
+) {
 	const rupees = moneyOf(amount);
 	const current = moneyOf(user.wallet_balance);
 	if (current + 1e-9 < rupees) throw new HttpError(400, "Not enough wallet money.");
@@ -612,10 +624,11 @@ async function debitWallet(db: D1Database, user: Row, amount: number, note: stri
 	await run(db, "UPDATE users SET wallet_balance = ? WHERE id = ?", next, user.id);
 	await run(
 		db,
-		"INSERT INTO wallet_entries (id, user_id, amount, kind, source, note, order_id, created_by, created_at) VALUES (?, ?, ?, 'debit', 'order', ?, ?, NULL, ?)",
+		"INSERT INTO wallet_entries (id, user_id, amount, kind, source, note, order_id, created_by, created_at) VALUES (?, ?, ?, 'debit', ?, ?, ?, NULL, ?)",
 		uuid(),
 		user.id,
 		-rupees,
+		source.slice(0, 24) || "order",
 		note,
 		orderId,
 		nowIso(),
@@ -2546,11 +2559,23 @@ export function registerCroco(app: App) {
 			});
 			const upgradeMode = literal(body, "upgrade_mode", UPGRADE_MODES, "");
 			const startsOn = optStr(body, "starts_on", 10);
+			const method = literal(body, "payment_method", ["UPI", "WALLET"], "UPI");
 			const user = await currentUser(c);
 			const db = c.env.DB;
 			const hasPin = user.location_lat != null && user.location_lng != null;
 			const hasAddress = !!String(user.location_address || user.location_locality || "").trim();
 			if (!hasPin || !hasAddress) throw new HttpError(400, "Add your delivery location before requesting a plan.");
+			const walletAmount = rupeesFromPrice(price);
+			if (method === "WALLET") {
+				if (walletAmount <= 0) throw new HttpError(400, "This plan has no payable amount.");
+				if (moneyOf(user.wallet_balance) + 1e-9 < walletAmount) {
+					throw new HttpError(400, "Not enough wallet money.");
+				}
+			}
+			const paidNote =
+				method === "WALLET" && !/Paid /i.test(details)
+					? [details.trim(), "Paid wallet"].filter(Boolean).join("\n")
+					: details.trim();
 			const id = uuid();
 			await db.batch([
 				prep(db, "UPDATE plan_requests SET status = 'cancelled', decided_at = ? WHERE user_id = ? AND status = 'pending'", nowIso(), user.id),
@@ -2565,7 +2590,7 @@ export function registerCroco(app: App) {
 					price.trim(),
 					period.trim(),
 					bottles.trim(),
-					details.trim(),
+					paidNote,
 					days,
 					JSON.stringify(items),
 					upgradeMode,
@@ -2578,6 +2603,14 @@ export function registerCroco(app: App) {
 				),
 			]);
 			const created = (await one(db, "SELECT * FROM plan_requests WHERE id = ?", id))!;
+			if (method === "WALLET") {
+				try {
+					await debitWallet(db, user, walletAmount, `Plan ${planName.trim()}`, id, "plan");
+				} catch (error) {
+					await run(db, "DELETE FROM plan_requests WHERE id = ?", id);
+					throw error;
+				}
+			}
 			await activatePaidRequest(db, created);
 			return requestOut((await one(db, "SELECT * FROM plan_requests WHERE id = ?", id))!);
 		},
