@@ -2559,22 +2559,46 @@ export function registerCroco(app: App) {
 			});
 			const upgradeMode = literal(body, "upgrade_mode", UPGRADE_MODES, "");
 			const startsOn = optStr(body, "starts_on", 10);
-			const method = literal(body, "payment_method", ["UPI", "WALLET"], "UPI");
+			const methodIn = literal(body, "payment_method", ["UPI", "WALLET", "SPLIT"], "UPI");
 			const user = await currentUser(c);
 			const db = c.env.DB;
 			const hasPin = user.location_lat != null && user.location_lng != null;
 			const hasAddress = !!String(user.location_address || user.location_locality || "").trim();
 			if (!hasPin || !hasAddress) throw new HttpError(400, "Add your delivery location before requesting a plan.");
-			const walletAmount = rupeesFromPrice(price);
+			const total = rupeesFromPrice(price);
+			const walletInput = optNum(body, "wallet_amount", { ge: 0, le: 100000 });
+			let method = methodIn;
+			let debit = 0;
 			if (method === "WALLET") {
-				if (walletAmount <= 0) throw new HttpError(400, "This plan has no payable amount.");
-				if (moneyOf(user.wallet_balance) + 1e-9 < walletAmount) {
-					throw new HttpError(400, "Not enough wallet money.");
+				debit = moneyOf(walletInput ?? total);
+				if (total <= 0) throw new HttpError(400, "This plan has no payable amount.");
+				if (Math.abs(debit - total) > 1e-6) {
+					throw new HttpError(400, "Wallet must cover the full bill, or pay the rest with UPI.");
+				}
+			} else if (method === "SPLIT") {
+				debit = moneyOf(walletInput ?? 0);
+				if (total <= 0) throw new HttpError(400, "This plan has no payable amount.");
+				if (debit <= 0) throw new HttpError(400, "Choose how much to take from wallet.");
+				if (debit + 1e-9 >= total) {
+					method = "WALLET";
+					debit = total;
+				} else if (total - debit + 1e-9 < 1) {
+					throw new HttpError(400, "Remaining UPI amount must be at least ₹1.");
 				}
 			}
+			if (debit > 0 && moneyOf(user.wallet_balance) + 1e-9 < debit) {
+				throw new HttpError(400, "Not enough wallet money.");
+			}
 			const paidNote =
-				method === "WALLET" && !/Paid /i.test(details)
-					? [details.trim(), "Paid wallet"].filter(Boolean).join("\n")
+				debit > 0 && !/Paid /i.test(details)
+					? [
+							details.trim(),
+							method === "SPLIT"
+								? `Paid wallet ₹${debit.toFixed(2)} + UPI`
+								: `Paid wallet ₹${debit.toFixed(2)}`,
+						]
+							.filter(Boolean)
+							.join("\n")
 					: details.trim();
 			const id = uuid();
 			await db.batch([
@@ -2603,9 +2627,9 @@ export function registerCroco(app: App) {
 				),
 			]);
 			const created = (await one(db, "SELECT * FROM plan_requests WHERE id = ?", id))!;
-			if (method === "WALLET") {
+			if (debit > 0) {
 				try {
-					await debitWallet(db, user, walletAmount, `Plan ${planName.trim()}`, id, "plan");
+					await debitWallet(db, user, debit, `Plan ${planName.trim()}`, id, "plan");
 				} catch (error) {
 					await run(db, "DELETE FROM plan_requests WHERE id = ?", id);
 					throw error;
