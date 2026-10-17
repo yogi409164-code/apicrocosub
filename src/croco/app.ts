@@ -3994,6 +3994,9 @@ export function registerCroco(app: App) {
 					error: error ? String(error) : null,
 					amount_refunded: Math.trunc(num(row.amount_refunded)),
 					refund_status: text(row.refund_status),
+					fee: Math.trunc(num(row.fee)),
+					tax: Math.trunc(num(row.tax)),
+					settled: text(row.settlement_id) ? true : typeof row.settled === "boolean" ? row.settled : null,
 					created_at: unixIso(row.created_at),
 				};
 			});
