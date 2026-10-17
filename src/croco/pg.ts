@@ -276,6 +276,7 @@ export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS tax_percent DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS reward_min_percent INTEGER NOT NULL DEFAULT 1`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS reward_max_percent INTEGER NOT NULL DEFAULT 10`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juices ADD COLUMN IF NOT EXISTS stock_qty INTEGER`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS packaging_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_gst DOUBLE PRECISION NOT NULL DEFAULT 0`);
@@ -340,6 +341,7 @@ CREATE TABLE IF NOT EXISTS ${s}.juices (
   in_plans BOOLEAN NOT NULL DEFAULT TRUE,
   offer_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
   ml INTEGER,
+  stock_qty INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS ${s}.juice_categories (

@@ -818,6 +818,7 @@ function juiceOut(row: Row, flags?: { in_poster?: boolean; in_plans?: boolean; a
 		in_plans: flags?.in_plans ?? (row.in_plans == null && row.inPlans == null ? true : bool(row.in_plans ?? row.inPlans)),
 		offer_percent: num(row.offer_percent),
 		ml: row.ml == null ? mlFromName(String(row.name ?? "")) : num(row.ml),
+		stock_qty: row.stock_qty == null || row.stock_qty === "" ? null : Math.max(0, int(row.stock_qty, 0)),
 		created_at: text(row.created_at),
 	};
 }
@@ -870,6 +871,7 @@ function menuJuice(raw: unknown, index: number): {
 	in_poster: boolean;
 	in_plans: boolean;
 	offer_percent: number;
+	stock_qty?: number | null;
 	created_at: string | null;
 } {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) invalid(`juices.${index}`, "Input should be a valid object", raw);
@@ -888,6 +890,11 @@ function menuJuice(raw: unknown, index: number): {
 		in_poster: bool(row.in_poster),
 		in_plans: row.in_plans == null ? true : bool(row.in_plans),
 		offer_percent: Number.isFinite(offer) ? Math.min(Math.max(offer, 0), 90) : 0,
+		stock_qty: Object.prototype.hasOwnProperty.call(row, "stock_qty")
+			? row.stock_qty == null || row.stock_qty === ""
+				? null
+				: Math.max(0, Math.trunc(Number(row.stock_qty) || 0))
+			: undefined,
 		created_at: typeof row.created_at === "string" ? row.created_at : null,
 	};
 }
@@ -1651,6 +1658,32 @@ async function completedOrderCount(db: D1Database, userId: string): Promise<numb
 	return rows.filter((row) => String(row.status) !== "cancelled").length;
 }
 
+async function takeStock(db: D1Database, items: { id: string; name: string; qty: number }[]) {
+	const need = new Map<string, { name: string; qty: number }>();
+	for (const item of items) {
+		const current = need.get(item.id) ?? { name: item.name, qty: 0 };
+		current.qty += item.qty;
+		need.set(item.id, current);
+	}
+	for (const [id, item] of need) {
+		const row = await one(db, "SELECT name, stock_qty FROM juices WHERE id = ?", id);
+		if (!row || row.stock_qty == null || row.stock_qty === "") continue;
+		const left = Math.max(0, int(row.stock_qty, 0));
+		if (left < item.qty) {
+			throw new HttpError(400, `${String(row.name || item.name)} is out of stock.`);
+		}
+		await run(db, "UPDATE juices SET stock_qty = stock_qty - ? WHERE id = ? AND stock_qty IS NOT NULL AND stock_qty >= ?", item.qty, id, item.qty);
+	}
+}
+
+async function restoreStock(db: D1Database, items: { id: string; qty: number }[]) {
+	const need = new Map<string, number>();
+	for (const item of items) need.set(item.id, (need.get(item.id) ?? 0) + item.qty);
+	for (const [id, qty] of need) {
+		await run(db, "UPDATE juices SET stock_qty = stock_qty + ? WHERE id = ? AND stock_qty IS NOT NULL", qty, id);
+	}
+}
+
 async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType: string, paymentMethod: string, paymentId?: string | null): Promise<Row> {
 	const method = String(paymentMethod || "COD").toUpperCase();
 	if (method === "COD") {
@@ -1661,6 +1694,7 @@ async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType
 		}
 	}
 	const prepared = await prepareOrder(db, user, items, deliveryType);
+	await takeStock(db, prepared.cleaned);
 	if (method === "WALLET" && moneyOf(user.wallet_balance) + 1e-9 < prepared.total) {
 		throw new HttpError(400, "Not enough wallet money.");
 	}
@@ -1695,6 +1729,7 @@ async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType
 		try {
 			await debitWallet(db, user, prepared.total, `Order ${id}`, id);
 		} catch (error) {
+			await restoreStock(db, prepared.cleaned);
 			await run(db, "DELETE FROM juice_orders WHERE id = ?", id);
 			throw error;
 		}
@@ -3491,6 +3526,9 @@ export function registerCroco(app: App) {
 				created += 1;
 			}
 			await ensureCategory(db, input.category);
+			if (input.stock_qty !== undefined) {
+				await run(db, "UPDATE juices SET stock_qty = ? WHERE id = ?", input.stock_qty, id);
+			}
 		}
 		const names = categories.length ? await applyCategoryOrder(db, categories) : await categoryNames(db);
 		return { imported: created + updated, created, updated, categories: names };
@@ -3546,15 +3584,26 @@ export function registerCroco(app: App) {
 			const inPoster = optBool(body, "in_poster");
 			const inPlans = optBool(body, "in_plans");
 			const offer = optNum(body, "offer_percent", { ge: 0, le: 90 });
+			const trackStock = optBool(body, "track_stock");
+			const stockQty = optNum(body, "stock_qty", { ge: 0, le: 100000, integer: true });
 			await currentAdmin(c);
 			const juice = await juiceById(c.env.DB, c.req.param("juiceId"));
 			const nextPoster = inPoster ?? bool(juice.in_poster);
 			const nextPlans = inPlans ?? (juice.in_plans == null ? true : bool(juice.in_plans));
+			let nextStock: number | null | undefined;
+			if (trackStock === false) {
+				nextStock = null;
+			} else if (stockQty != null) {
+				nextStock = stockQty;
+			} else if (trackStock === true) {
+				nextStock = juice.stock_qty == null ? 0 : Math.max(0, int(juice.stock_qty, 0));
+			}
 			await run(
 				c.env.DB,
-				`UPDATE juices SET price = ?, in_poster = ${sqlBool(nextPoster)}, in_plans = ${sqlBool(nextPlans)}, offer_percent = ? WHERE id = ?`,
+				`UPDATE juices SET price = ?, in_poster = ${sqlBool(nextPoster)}, in_plans = ${sqlBool(nextPlans)}, offer_percent = ?${nextStock === undefined ? "" : ", stock_qty = ?"} WHERE id = ?`,
 				price ?? juice.price,
 				offer ?? juice.offer_percent,
+				...(nextStock === undefined ? [] : [nextStock]),
 				juice.id,
 			);
 			return juiceOut(await juiceById(c.env.DB, String(juice.id)), { in_poster: nextPoster, in_plans: nextPlans });
