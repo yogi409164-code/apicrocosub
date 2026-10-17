@@ -262,6 +262,20 @@ export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_slots TEXT NOT NULL DEFAULT '[]'`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS fulfillment_lock_start INTEGER NOT NULL DEFAULT 360`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS fulfillment_lock_end INTEGER NOT NULL DEFAULT 600`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS packaging_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS packaging_amount DOUBLE PRECISION NOT NULL DEFAULT 0`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS platform_fee_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS platform_fee_percent DOUBLE PRECISION NOT NULL DEFAULT 0`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS platform_fee_amount DOUBLE PRECISION NOT NULL DEFAULT 0`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS platform_gst_percent DOUBLE PRECISION NOT NULL DEFAULT 18`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_fee_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_fee_per_km DOUBLE PRECISION NOT NULL DEFAULT 0`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS tax_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS tax_percent DOUBLE PRECISION NOT NULL DEFAULT 0`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS packaging_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_gst DOUBLE PRECISION NOT NULL DEFAULT 0`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS tax_amount DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS rating INTEGER`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS payment_id VARCHAR(64)`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(24)`);
@@ -340,6 +354,16 @@ CREATE TABLE IF NOT EXISTS ${s}.store_settings (
   cart_min_order DOUBLE PRECISION NOT NULL DEFAULT 0,
   fulfillment_lock_start INTEGER NOT NULL DEFAULT 360,
   fulfillment_lock_end INTEGER NOT NULL DEFAULT 600,
+  packaging_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  packaging_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+  platform_fee_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  platform_fee_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+  platform_fee_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+  platform_gst_percent DOUBLE PRECISION NOT NULL DEFAULT 18,
+  delivery_fee_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  delivery_fee_per_km DOUBLE PRECISION NOT NULL DEFAULT 0,
+  tax_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  tax_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
   show_delivery_instant BOOLEAN NOT NULL DEFAULT TRUE,
   show_delivery_slot BOOLEAN NOT NULL DEFAULT TRUE,
   delivery_slots TEXT NOT NULL DEFAULT '[]'
@@ -392,6 +416,10 @@ CREATE TABLE IF NOT EXISTS ${s}.juice_orders (
   items TEXT NOT NULL DEFAULT '[]',
   subtotal DOUBLE PRECISION NOT NULL DEFAULT 0,
   delivery_fee DOUBLE PRECISION NOT NULL DEFAULT 0,
+  packaging_fee DOUBLE PRECISION NOT NULL DEFAULT 0,
+  platform_fee DOUBLE PRECISION NOT NULL DEFAULT 0,
+  platform_gst DOUBLE PRECISION NOT NULL DEFAULT 0,
+  tax_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
   total DOUBLE PRECISION NOT NULL DEFAULT 0,
   payment_method VARCHAR(24) NOT NULL DEFAULT 'COD',
   status VARCHAR(20) NOT NULL DEFAULT 'placed',

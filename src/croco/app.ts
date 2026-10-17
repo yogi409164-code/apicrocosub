@@ -1051,6 +1051,16 @@ function storeOut(row: Row) {
 		cart_min_order: row.cart_min_order == null ? 0 : num(row.cart_min_order),
 		fulfillment_lock_start: row.fulfillment_lock_start == null ? 360 : Math.trunc(num(row.fulfillment_lock_start)),
 		fulfillment_lock_end: row.fulfillment_lock_end == null ? 600 : Math.trunc(num(row.fulfillment_lock_end)),
+		packaging_enabled: bool(row.packaging_enabled),
+		packaging_amount: num(row.packaging_amount),
+		platform_fee_enabled: bool(row.platform_fee_enabled),
+		platform_fee_percent: num(row.platform_fee_percent),
+		platform_fee_amount: num(row.platform_fee_amount),
+		platform_gst_percent: row.platform_gst_percent == null ? 18 : num(row.platform_gst_percent),
+		delivery_fee_enabled: bool(row.delivery_fee_enabled),
+		delivery_fee_per_km: num(row.delivery_fee_per_km),
+		tax_enabled: bool(row.tax_enabled),
+		tax_percent: num(row.tax_percent),
 		show_delivery_instant: slots.some((item) => item.visible !== false && item.kind === "instant"),
 		show_delivery_slot: slots.some((item) => item.visible !== false && ["today", "next_day", "pre", "book"].includes(String(item.kind))),
 		delivery_slots: slots,
@@ -1425,6 +1435,10 @@ function orderOut(row: Row) {
 		items: orderItems(row.items),
 		subtotal: num(row.subtotal),
 		delivery_fee: num(row.delivery_fee),
+		packaging_fee: num(row.packaging_fee),
+		platform_fee: num(row.platform_fee),
+		platform_gst: num(row.platform_gst),
+		tax_amount: num(row.tax_amount),
 		total: num(row.total),
 		payment_method: String(row.payment_method || "COD"),
 		status: String(row.status || "placed"),
@@ -1504,6 +1518,31 @@ function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number): num
 	return distanceMeters(lat1, lng1, lat2, lng2) / 1000;
 }
 
+function moneyOfCharge(value: number): number {
+	return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function quoteCharges(store: Row, subtotal: number, km: number) {
+	const packaging = bool(store.packaging_enabled) ? moneyOfCharge(num(store.packaging_amount)) : 0;
+	const delivery = bool(store.delivery_fee_enabled) ? moneyOfCharge(Math.max(0, km) * num(store.delivery_fee_per_km)) : 0;
+	const platform = bool(store.platform_fee_enabled)
+		? moneyOfCharge(subtotal * (num(store.platform_fee_percent) / 100) + num(store.platform_fee_amount))
+		: 0;
+	const platformGst = bool(store.platform_fee_enabled)
+		? moneyOfCharge(platform * (num(store.platform_gst_percent) / 100))
+		: 0;
+	const tax = bool(store.tax_enabled) ? moneyOfCharge(subtotal * (num(store.tax_percent) / 100)) : 0;
+	return {
+		subtotal: moneyOfCharge(subtotal),
+		packaging_fee: packaging,
+		delivery_fee: delivery,
+		platform_fee: platform,
+		platform_gst: platformGst,
+		tax_amount: tax,
+		total: moneyOfCharge(subtotal + packaging + delivery + platform + platformGst + tax),
+	};
+}
+
 async function prepareOrder(db: D1Database, user: Row, items: Row[], deliveryType: string) {
 	const cleaned = orderItems(items);
 	if (!cleaned.length) throw new HttpError(400, "Add items before placing an order.");
@@ -1516,11 +1555,13 @@ async function prepareOrder(db: D1Database, user: Row, items: Row[], deliveryTyp
 	const subtotal = Math.round(cleaned.reduce((sum, item) => sum + item.price * item.qty, 0) * 100) / 100;
 	const minimum = num(store.cart_min_order);
 	if (subtotal < minimum) throw new HttpError(400, `Minimum order is ₹${minimum}.`);
+	const km = distanceKm(num(store.latitude), num(store.longitude), num(user.location_lat), num(user.location_lng));
+	const quote = quoteCharges(store, subtotal, km);
 	const slot = resolveDeliverySlot(store, deliveryType);
 	const kind = String(slot.kind) === "instant" ? "instant" : String(slot.kind);
 	return {
 		cleaned,
-		subtotal,
+		...quote,
 		kind,
 		slotDate: addDays(todayIso(), Math.trunc(num(slot.offset_days))),
 		slotWindow: kind === "instant" ? "Instant" : String(slot.window || DELIVERY_WINDOW),
@@ -1544,19 +1585,24 @@ async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType
 		}
 	}
 	const prepared = await prepareOrder(db, user, items, deliveryType);
-	if (method === "WALLET" && moneyOf(user.wallet_balance) + 1e-9 < prepared.subtotal) {
+	if (method === "WALLET" && moneyOf(user.wallet_balance) + 1e-9 < prepared.total) {
 		throw new HttpError(400, "Not enough wallet money.");
 	}
 	const id = uuid();
 	await run(
 		db,
-		`INSERT INTO juice_orders (id, user_id, items, subtotal, delivery_fee, total, payment_method, status, delivery_lat, delivery_lng, delivery_address, delivery_locality, delivery_date, delivery_window, delivery_type, payment_id, payment_status, created_at)
-		 VALUES (?, ?, ?, ?, 0, ?, ?, 'placed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO juice_orders (id, user_id, items, subtotal, delivery_fee, packaging_fee, platform_fee, platform_gst, tax_amount, total, payment_method, status, delivery_lat, delivery_lng, delivery_address, delivery_locality, delivery_date, delivery_window, delivery_type, payment_id, payment_status, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'placed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id,
 		user.id,
 		JSON.stringify(prepared.cleaned),
 		prepared.subtotal,
-		prepared.subtotal,
+		prepared.delivery_fee,
+		prepared.packaging_fee,
+		prepared.platform_fee,
+		prepared.platform_gst,
+		prepared.tax_amount,
+		prepared.total,
 		method,
 		user.location_lat,
 		user.location_lng,
@@ -1571,7 +1617,7 @@ async function createOrder(db: D1Database, user: Row, items: Row[], deliveryType
 	);
 	if (method === "WALLET") {
 		try {
-			await debitWallet(db, user, prepared.subtotal, `Order ${id}`, id);
+			await debitWallet(db, user, prepared.total, `Order ${id}`, id);
 		} catch (error) {
 			await run(db, "DELETE FROM juice_orders WHERE id = ?", id);
 			throw error;
@@ -1890,7 +1936,7 @@ function paymentError(error: unknown): never {
 
 async function amountPaise(db: D1Database, user: Row, items: Row[], deliveryType: string, amount: number | null): Promise<number> {
 	let paise: number;
-	if (items.length) paise = Math.round((await prepareOrder(db, user, items, deliveryType)).subtotal * 100);
+	if (items.length) paise = Math.round((await prepareOrder(db, user, items, deliveryType)).total * 100);
 	else if (amount !== null) paise = Math.trunc(amount);
 	else throw new HttpError(400, "Add items before paying.");
 	if (paise < 100) throw new HttpError(400, "Minimum payment is ₹1.");
@@ -3592,6 +3638,34 @@ export function registerCroco(app: App) {
 		await currentAdmin(c);
 		await storeRow(c.env.DB);
 		await run(c.env.DB, "UPDATE store_settings SET custom_discount_percent = ? WHERE id = ?", Math.max(0, Math.min(90, percent)), STORE_ID);
+		return storeOut(await storeRow(c.env.DB));
+	}, { auth: true });
+
+	route("patch", "/admin/store/order-charges", "admin", "Update order packaging, fees, and tax", async (c) => {
+		const body = await bodyOf(c);
+		const packagingAmount = reqNum(body, "packaging_amount", { ge: 0, le: 10000 });
+		const platformPercent = reqNum(body, "platform_fee_percent", { ge: 0, le: 100 });
+		const platformAmount = reqNum(body, "platform_fee_amount", { ge: 0, le: 10000 });
+		const platformGst = reqNum(body, "platform_gst_percent", { ge: 0, le: 100 });
+		const perKm = reqNum(body, "delivery_fee_per_km", { ge: 0, le: 10000 });
+		const taxPercent = reqNum(body, "tax_percent", { ge: 0, le: 100 });
+		await currentAdmin(c);
+		await storeRow(c.env.DB);
+		await run(
+			c.env.DB,
+			`UPDATE store_settings SET packaging_enabled = ?, packaging_amount = ?, platform_fee_enabled = ?, platform_fee_percent = ?, platform_fee_amount = ?, platform_gst_percent = ?, delivery_fee_enabled = ?, delivery_fee_per_km = ?, tax_enabled = ?, tax_percent = ? WHERE id = ?`,
+			bool(body.packaging_enabled),
+			Math.round(packagingAmount * 100) / 100,
+			bool(body.platform_fee_enabled),
+			Math.round(platformPercent * 100) / 100,
+			Math.round(platformAmount * 100) / 100,
+			Math.round(platformGst * 100) / 100,
+			bool(body.delivery_fee_enabled),
+			Math.round(perKm * 100) / 100,
+			bool(body.tax_enabled),
+			Math.round(taxPercent * 100) / 100,
+			STORE_ID,
+		);
 		return storeOut(await storeRow(c.env.DB));
 	}, { auth: true });
 
