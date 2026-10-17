@@ -29,6 +29,7 @@ export const APP_TABLES = [
 	"plan_requests",
 	"juice_orders",
 	"wallet_entries",
+	"scratch_rewards",
 	"support_tickets",
 	"support_messages",
 	"phone_otps",
@@ -50,6 +51,7 @@ const BOOL_KEYS = new Set([
 	"started",
 	"show_delivery_instant",
 	"show_delivery_slot",
+	"claimed",
 ]);
 
 function asBool(value: unknown): boolean {
@@ -272,6 +274,8 @@ export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_fee_per_km DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS tax_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS tax_percent DOUBLE PRECISION NOT NULL DEFAULT 0`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS reward_min_percent INTEGER NOT NULL DEFAULT 1`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS reward_max_percent INTEGER NOT NULL DEFAULT 10`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS packaging_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_gst DOUBLE PRECISION NOT NULL DEFAULT 0`);
@@ -364,6 +368,8 @@ CREATE TABLE IF NOT EXISTS ${s}.store_settings (
   delivery_fee_per_km DOUBLE PRECISION NOT NULL DEFAULT 0,
   tax_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   tax_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+  reward_min_percent INTEGER NOT NULL DEFAULT 1,
+  reward_max_percent INTEGER NOT NULL DEFAULT 10,
   show_delivery_instant BOOLEAN NOT NULL DEFAULT TRUE,
   show_delivery_slot BOOLEAN NOT NULL DEFAULT TRUE,
   delivery_slots TEXT NOT NULL DEFAULT '[]'
@@ -446,6 +452,17 @@ CREATE TABLE IF NOT EXISTS ${s}.wallet_entries (
   order_id VARCHAR(64),
   created_by VARCHAR(64),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ${s}.scratch_rewards (
+  id VARCHAR(64) PRIMARY KEY,
+  user_id VARCHAR(64) NOT NULL,
+  ref_id VARCHAR(64) NOT NULL,
+  paid_amount DOUBLE PRECISION NOT NULL,
+  percent DOUBLE PRECISION NOT NULL,
+  amount DOUBLE PRECISION NOT NULL,
+  claimed BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, ref_id)
 );
 CREATE TABLE IF NOT EXISTS ${s}.support_tickets (
   id VARCHAR(64) PRIMARY KEY,

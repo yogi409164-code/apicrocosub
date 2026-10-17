@@ -628,6 +628,80 @@ async function creditWallet(db: D1Database, identifier: string, amount: number, 
 	return walletEntryOut(row, updated);
 }
 
+function rollPercent(low: number, high: number): number {
+	const span = high - low + 1;
+	const buf = new Uint32Array(1);
+	crypto.getRandomValues(buf);
+	return low + (buf[0] % span);
+}
+
+async function issueScratchReward(db: D1Database, user: Row, refId: string, paidAmount: number): Promise<string | null> {
+	const paid = moneyOf(paidAmount);
+	if (!refId || paid <= 0) return null;
+	const existing = await one(db, "SELECT id, claimed FROM scratch_rewards WHERE user_id = ? AND ref_id = ? LIMIT 1", user.id, refId);
+	if (existing) return bool(existing.claimed) ? null : String(existing.id);
+	const store = await storeRow(db);
+	let low = store.reward_min_percent == null ? 1 : Math.trunc(num(store.reward_min_percent));
+	let high = store.reward_max_percent == null ? 10 : Math.trunc(num(store.reward_max_percent));
+	low = Math.max(0, Math.min(100, low));
+	high = Math.max(0, Math.min(100, high));
+	if (low > high) [low, high] = [high, low];
+	if (high <= 0) return null;
+	const percent = rollPercent(low, high);
+	const amount = moneyOf(paid * percent / 100);
+	if (amount < 0.01) return null;
+	const id = uuid();
+	await run(
+		db,
+		"INSERT INTO scratch_rewards (id, user_id, ref_id, paid_amount, percent, amount, claimed, created_at) VALUES (?, ?, ?, ?, ?, ?, FALSE, ?)",
+		id,
+		user.id,
+		refId,
+		paid,
+		percent,
+		amount,
+		nowIso(),
+	);
+	return id;
+}
+
+async function safeScratchReward(db: D1Database, user: Row, refId: string, paidAmount: number): Promise<string | null> {
+	try {
+		return await issueScratchReward(db, user, refId, paidAmount);
+	} catch {
+		return null;
+	}
+}
+
+async function claimScratchReward(db: D1Database, user: Row, rewardId: string) {
+	const row = await one(db, "SELECT * FROM scratch_rewards WHERE id = ? AND user_id = ?", rewardId, user.id);
+	if (!row) throw new HttpError(404, "Reward not found.");
+	if (!bool(row.claimed)) {
+		const amount = moneyOf(row.amount);
+		const next = moneyOf(num(user.wallet_balance) + amount);
+		await run(db, "UPDATE users SET wallet_balance = ? WHERE id = ?", next, user.id);
+		await run(
+			db,
+			"INSERT INTO wallet_entries (id, user_id, amount, kind, source, note, order_id, created_by, created_at) VALUES (?, ?, ?, 'credit', 'scratch', ?, ?, NULL, ?)",
+			uuid(),
+			user.id,
+			amount,
+			`Scratch card ${Math.trunc(num(row.percent))}%`,
+			text(row.ref_id),
+			nowIso(),
+		);
+		await run(db, "UPDATE scratch_rewards SET claimed = TRUE WHERE id = ?", row.id);
+	}
+	const updated = (await userById(db, user.id)) ?? user;
+	return {
+		id: String(row.id),
+		percent: num(row.percent),
+		amount: moneyOf(row.amount),
+		paid_amount: moneyOf(row.paid_amount),
+		balance: moneyOf(updated.wallet_balance),
+	};
+}
+
 function rupeesFromPrice(price: string) {
 	const n = Number(String(price).replace(/[^\d.]/g, ""));
 	return moneyOf(Number.isFinite(n) ? n : 0);
@@ -1061,6 +1135,8 @@ function storeOut(row: Row) {
 		delivery_fee_per_km: num(row.delivery_fee_per_km),
 		tax_enabled: bool(row.tax_enabled),
 		tax_percent: num(row.tax_percent),
+		reward_min_percent: row.reward_min_percent == null ? 1 : Math.trunc(num(row.reward_min_percent)),
+		reward_max_percent: row.reward_max_percent == null ? 10 : Math.trunc(num(row.reward_max_percent)),
 		show_delivery_instant: slots.some((item) => item.visible !== false && item.kind === "instant"),
 		show_delivery_slot: slots.some((item) => item.visible !== false && ["today", "next_day", "pre", "book"].includes(String(item.kind))),
 		delivery_slots: slots,
@@ -2361,6 +2437,17 @@ export function registerCroco(app: App) {
 		return { balance: moneyOf(user.wallet_balance), entries: entries.map((row) => walletEntryOut(row, user)) };
 	}, { auth: true });
 
+	route("get", "/wallet/rewards/pending", "wallet", "Unclaimed scratch reward", async (c) => {
+		const user = await currentUser(c);
+		const row = await one(c.env.DB, "SELECT id FROM scratch_rewards WHERE user_id = ? AND claimed = FALSE ORDER BY created_at DESC LIMIT 1", user.id);
+		return row ? { id: String(row.id) } : null;
+	}, { auth: true });
+
+	route("post", "/wallet/rewards/:rewardId/claim", "wallet", "Scratch a reward into the wallet", async (c) => {
+		const user = await currentUser(c);
+		return claimScratchReward(c.env.DB, user, c.req.param("rewardId"));
+	}, { auth: true });
+
 	route(
 		"post",
 		"/auth/me/phone/otp",
@@ -2575,7 +2662,9 @@ export function registerCroco(app: App) {
 			const user = await currentUser(c);
 			const method = (optStr(body, "payment_method", 24, "COD") ?? "COD").toUpperCase();
 			if (!["COD", "WALLET"].includes(method)) throw new HttpError(400, "Choose a valid payment method.");
-			return orderOut(await createOrder(c.env.DB, user, items, deliveryType, method));
+			const row = await createOrder(c.env.DB, user, items, deliveryType, method);
+			const rewardId = method === "WALLET" ? await safeScratchReward(c.env.DB, user, String(row.id), num(row.total)) : null;
+			return { ...orderOut(row), reward_id: rewardId };
 		},
 		{ auth: true, status: 201 },
 	);
@@ -2646,7 +2735,8 @@ export function registerCroco(app: App) {
 				if (!remote.ok) raiseApi(remote);
 				if (Math.trunc(num(remote.data.amount)) !== expected) throw new HttpError(400, "Payment amount does not match the cart.");
 				const row = await createOrder(c.env.DB, user, items, deliveryType, "UPI", paymentId);
-				return { verified: true, order: orderOut(row) };
+				const rewardId = await safeScratchReward(c.env.DB, user, String(row.id), num(row.total));
+				return { verified: true, order: orderOut(row), reward_id: rewardId };
 		} catch (error) {
 				paymentError(error);
 			}
@@ -2766,7 +2856,9 @@ export function registerCroco(app: App) {
 				}
 			}
 			await activatePaidRequest(db, created);
-			return requestOut((await one(db, "SELECT * FROM plan_requests WHERE id = ?", id))!);
+			const saved = (await one(db, "SELECT * FROM plan_requests WHERE id = ?", id))!;
+			const rewardId = await safeScratchReward(db, user, id, rupeesFromPrice(price));
+			return { ...requestOut(saved), reward_id: rewardId };
 		},
 		{ auth: true, status: 201 },
 	);
@@ -3638,6 +3730,19 @@ export function registerCroco(app: App) {
 		await currentAdmin(c);
 		await storeRow(c.env.DB);
 		await run(c.env.DB, "UPDATE store_settings SET custom_discount_percent = ? WHERE id = ?", Math.max(0, Math.min(90, percent)), STORE_ID);
+		return storeOut(await storeRow(c.env.DB));
+	}, { auth: true });
+
+	route("patch", "/admin/store/reward", "admin", "Set the scratch-card cashback range", async (c) => {
+		const body = await bodyOf(c);
+		let min = reqNum(body, "reward_min_percent", { ge: 0, le: 100, integer: true });
+		let max = reqNum(body, "reward_max_percent", { ge: 0, le: 100, integer: true });
+		min = Math.max(0, Math.min(100, Math.trunc(min)));
+		max = Math.max(0, Math.min(100, Math.trunc(max)));
+		if (min > max) [min, max] = [max, min];
+		await currentAdmin(c);
+		await storeRow(c.env.DB);
+		await run(c.env.DB, "UPDATE store_settings SET reward_min_percent = ?, reward_max_percent = ? WHERE id = ?", min, max, STORE_ID);
 		return storeOut(await storeRow(c.env.DB));
 	}, { auth: true });
 
