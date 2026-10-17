@@ -116,6 +116,29 @@ function todayIso(): string {
 	return istDate();
 }
 
+function istMinutes(ms = Date.now()): number {
+	const shifted = new Date(ms + IST_OFFSET_MS);
+	return shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
+}
+
+function clockLabel(minute: number): string {
+	const safe = ((Math.trunc(minute) % 1440) + 1440) % 1440;
+	const hour = Math.floor(safe / 60);
+	const mins = safe % 60;
+	const period = hour < 12 ? "AM" : "PM";
+	const hour12 = hour % 12 || 12;
+	return `${hour12}:${String(mins).padStart(2, "0")} ${period}`;
+}
+
+function choiceLocked(date: string, startMinute: number, endMinute: number): boolean {
+	const start = ((Math.trunc(startMinute) % 1440) + 1440) % 1440;
+	const end = ((Math.trunc(endMinute) % 1440) + 1440) % 1440;
+	if (start === end || date !== todayIso()) return false;
+	const minutes = istMinutes();
+	if (end < start) return minutes >= start || minutes < end;
+	return minutes >= start && minutes < end;
+}
+
 function toMs(value: unknown): number {
 	if (typeof value !== "string" || !value) return Number.NaN;
 	const text = value.includes("T") ? value : value.replace(" ", "T");
@@ -1026,6 +1049,8 @@ function storeOut(row: Row) {
 		distance_km: num(row.distance_km) || 10,
 		custom_discount_percent: row.custom_discount_percent == null ? 20 : num(row.custom_discount_percent),
 		cart_min_order: row.cart_min_order == null ? 0 : num(row.cart_min_order),
+		fulfillment_lock_start: row.fulfillment_lock_start == null ? 360 : Math.trunc(num(row.fulfillment_lock_start)),
+		fulfillment_lock_end: row.fulfillment_lock_end == null ? 600 : Math.trunc(num(row.fulfillment_lock_end)),
 		show_delivery_instant: slots.some((item) => item.visible !== false && item.kind === "instant"),
 		show_delivery_slot: slots.some((item) => item.visible !== false && ["today", "next_day", "pre", "book"].includes(String(item.kind))),
 		delivery_slots: slots,
@@ -2771,6 +2796,12 @@ export function registerCroco(app: App) {
 			const target = parseDate(date);
 			if (!target) throw new HttpError(400, "Pick a valid date.");
 			if (target < todayIso()) throw new HttpError(400, "Past dates cannot be changed.");
+			const store = await storeRow(c.env.DB);
+			const lockStart = store.fulfillment_lock_start == null ? 360 : Math.trunc(num(store.fulfillment_lock_start));
+			const lockEnd = store.fulfillment_lock_end == null ? 600 : Math.trunc(num(store.fulfillment_lock_end));
+			if (choiceLocked(target, lockStart, lockEnd)) {
+				throw new HttpError(400, `Delivery and takeaway are locked from ${clockLabel(lockStart)} to ${clockLabel(lockEnd)}.`);
+			}
 			if (mode === "delivery") {
 				const hasPin = user.location_lat != null && user.location_lng != null;
 				const hasAddress = Boolean(String(user.location_address || user.location_locality || "").trim());
@@ -3561,6 +3592,16 @@ export function registerCroco(app: App) {
 		await currentAdmin(c);
 		await storeRow(c.env.DB);
 		await run(c.env.DB, "UPDATE store_settings SET custom_discount_percent = ? WHERE id = ?", Math.max(0, Math.min(90, percent)), STORE_ID);
+		return storeOut(await storeRow(c.env.DB));
+	}, { auth: true });
+
+	route("patch", "/admin/store/fulfillment-lock", "admin", "Set when delivery and takeaway are locked", async (c) => {
+		const body = await bodyOf(c);
+		const start = reqNum(body, "fulfillment_lock_start", { ge: 0, le: 1439, integer: true });
+		const end = reqNum(body, "fulfillment_lock_end", { ge: 0, le: 1439, integer: true });
+		await currentAdmin(c);
+		await storeRow(c.env.DB);
+		await run(c.env.DB, "UPDATE store_settings SET fulfillment_lock_start = ?, fulfillment_lock_end = ? WHERE id = ?", Math.max(0, Math.min(1439, Math.trunc(start))), Math.max(0, Math.min(1439, Math.trunc(end))), STORE_ID);
 		return storeOut(await storeRow(c.env.DB));
 	}, { auth: true });
 

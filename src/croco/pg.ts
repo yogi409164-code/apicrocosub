@@ -260,6 +260,8 @@ export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS show_delivery_instant BOOLEAN NOT NULL DEFAULT TRUE`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS show_delivery_slot BOOLEAN NOT NULL DEFAULT TRUE`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_slots TEXT NOT NULL DEFAULT '[]'`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS fulfillment_lock_start INTEGER NOT NULL DEFAULT 360`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS fulfillment_lock_end INTEGER NOT NULL DEFAULT 600`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS rating INTEGER`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS payment_id VARCHAR(64)`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(24)`);
@@ -336,6 +338,8 @@ CREATE TABLE IF NOT EXISTS ${s}.store_settings (
   distance_km DOUBLE PRECISION NOT NULL DEFAULT 10,
   custom_discount_percent DOUBLE PRECISION NOT NULL DEFAULT 20,
   cart_min_order DOUBLE PRECISION NOT NULL DEFAULT 0,
+  fulfillment_lock_start INTEGER NOT NULL DEFAULT 360,
+  fulfillment_lock_end INTEGER NOT NULL DEFAULT 600,
   show_delivery_instant BOOLEAN NOT NULL DEFAULT TRUE,
   show_delivery_slot BOOLEAN NOT NULL DEFAULT TRUE,
   delivery_slots TEXT NOT NULL DEFAULT '[]'
