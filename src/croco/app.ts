@@ -1099,6 +1099,18 @@ function skippedSet(row: Row): Set<string> {
 	return new Set(parseSkipped(row.skipped_dates));
 }
 
+function parseDayFulfillment(raw: unknown): Record<string, "delivery" | "takeaway"> {
+	const value = jsonValue<unknown>(typeof raw === "string" ? raw : "", {});
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const choices: Record<string, "delivery" | "takeaway"> = {};
+	for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+		const date = parseDate(key);
+		if (!date) continue;
+		if (item === "takeaway" || item === "delivery") choices[date] = item;
+	}
+	return choices;
+}
+
 function placedEnd(start: string, planned: number, skipped: Set<string>): string {
 	let remaining = Math.max(1, planned);
 	let cursor = start;
@@ -1244,6 +1256,7 @@ function requestOut(row: Row) {
 		delivery_address: text(row.delivery_address),
 		delivery_locality: text(row.delivery_locality),
 		fulfillment: String(row.fulfillment || "delivery") === "takeaway" ? "takeaway" : "delivery",
+		day_fulfillment: parseDayFulfillment(row.day_fulfillment),
 	};
 }
 
@@ -2740,6 +2753,40 @@ export function registerCroco(app: App) {
 			touched += 1;
 		}
 			if (!touched) throw new HttpError(400, "That date is not skipped.");
+			return myRequests(c.env.DB, user.id);
+		},
+		{ auth: true },
+	);
+
+	route(
+		"post",
+		"/plans/requests/fulfillment",
+		"plans",
+		"Set delivery or takeaway for one day",
+		async (c) => {
+			const body = await bodyOf(c);
+			const date = reqStr(body, "date", 10, 10);
+			const mode = literal(body, "fulfillment", ["delivery", "takeaway"]);
+			const user = await currentUser(c);
+			const target = parseDate(date);
+			if (!target) throw new HttpError(400, "Pick a valid date.");
+			if (target < todayIso()) throw new HttpError(400, "Past dates cannot be changed.");
+			if (mode === "delivery") {
+				const hasPin = user.location_lat != null && user.location_lng != null;
+				const hasAddress = Boolean(String(user.location_address || user.location_locality || "").trim());
+				if (!hasPin || !hasAddress) throw new HttpError(400, "Add your delivery location before choosing delivery.");
+			}
+			let touched = 0;
+			for (const row of await acceptedRows(c.env.DB, user.id)) {
+				if (!deliversOn(row, target)) continue;
+				const current = parseDayFulfillment(row.day_fulfillment);
+				const base = String(row.fulfillment || "delivery") === "takeaway" ? "takeaway" : "delivery";
+				if (mode === base) delete current[target];
+				else current[target] = mode === "takeaway" ? "takeaway" : "delivery";
+				await run(c.env.DB, "UPDATE plan_requests SET day_fulfillment = ? WHERE id = ?", JSON.stringify(current), row.id);
+				touched += 1;
+			}
+			if (!touched) throw new HttpError(400, "No delivery on that date.");
 			return myRequests(c.env.DB, user.id);
 		},
 		{ auth: true },
