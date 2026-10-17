@@ -3214,6 +3214,25 @@ export function registerCroco(app: App) {
 		{ auth: true },
 	);
 
+	route(
+		"post",
+		"/admin/users/:userId/password",
+		"admin",
+		"Set a user's password",
+		async (c) => {
+			await currentAdmin(c);
+			const body = await bodyOf(c);
+			const password = reqStr(body, "password", 4, 72).trim();
+			if (password.length < 4) throw new HttpError(400, "Enter a password of at least 4 characters.");
+			const db = c.env.DB;
+			const user = await userById(db, c.req.param("userId"));
+			if (!user) throw new HttpError(404, "User not found.");
+			await run(db, "UPDATE users SET password_hash = ? WHERE id = ?", await hashPassword(password), user.id);
+			return { ok: true };
+		},
+		{ auth: true },
+	);
+
 	route("get", "/admin/roles", "admin", "All roles", async (c) => {
 		await currentAdmin(c);
 		await seedRoles(c.env.DB);
