@@ -3340,6 +3340,68 @@ export function registerCroco(app: App) {
 		{ auth: true },
 	);
 
+	route(
+		"post",
+		"/admin/orders/:orderId/refund",
+		"admin",
+		"Refund an order to the source account or the wallet",
+		async (c) => {
+			const admin = await currentAdmin(c);
+			const body = await bodyOf(c);
+			const destination = literal(body, "destination", ["source", "wallet"]);
+			const db = c.env.DB;
+			const row = await one(db, "SELECT * FROM juice_orders WHERE id = ?", c.req.param("orderId"));
+			if (!row) throw new HttpError(404, "Order not found.");
+			const payStatus = String(row.payment_status || "").toLowerCase();
+			if (["refunded", "refund_wallet", "refund_pending", "partial_refund"].includes(payStatus)) {
+				throw new HttpError(400, "This order is already refunded.");
+			}
+			const method = String(row.payment_method || "").toUpperCase();
+			if (method === "COD") throw new HttpError(400, "Cash orders are not refunded.");
+			if (method !== "UPI" && method !== "WALLET") throw new HttpError(400, "This order cannot be refunded.");
+			const total = moneyOf(row.total);
+			if (total < 0.01) throw new HttpError(400, "Nothing to refund.");
+			const user = await userById(db, row.user_id);
+			if (!user) throw new HttpError(400, "Customer not found.");
+			const paymentId = String(row.payment_id || "");
+			if (destination === "source" && paymentId.startsWith("pay_")) {
+				const paymentResult = await razorpay(c.env, `/payments/${encodeURIComponent(paymentId)}`);
+				if (!paymentResult.ok) raiseGateway(paymentResult, "Could not load this payment.");
+				const payment = paymentResult.data;
+				const status = String(payment.status ?? "");
+				const amount = Math.trunc(num(payment.amount));
+				const refunded = Math.trunc(num(payment.amount_refunded));
+				if (status === "refunded" || (amount && refunded >= amount)) throw new HttpError(400, "This payment is already refunded.");
+				if (status !== "captured") throw new HttpError(400, "Only a captured payment can be refunded.");
+				const remaining = amount - refunded;
+				if (remaining < 100) throw new HttpError(400, "Nothing is left to refund.");
+				const refundResult = await razorpay(c.env, `/payments/${encodeURIComponent(paymentId)}/refund`, "POST", { amount: remaining });
+				if (!refundResult.ok) raiseGateway(refundResult, "Could not refund this payment.");
+				await markOrdersRefundStatus(db, paymentId, refundStatusFromRefund(String(refundResult.data.status || "processed"), payment));
+			} else {
+				const existing = await one(db, "SELECT id FROM wallet_entries WHERE order_id = ? AND source = 'refund' AND kind = 'credit' LIMIT 1", row.id);
+				if (existing) throw new HttpError(400, "This order is already refunded to the wallet.");
+				const next = moneyOf(num(user.wallet_balance) + total);
+				await run(db, "UPDATE users SET wallet_balance = ? WHERE id = ?", next, user.id);
+				await run(
+					db,
+					"INSERT INTO wallet_entries (id, user_id, amount, kind, source, note, order_id, created_by, created_at) VALUES (?, ?, ?, 'credit', 'refund', ?, ?, ?, ?)",
+					uuid(),
+					user.id,
+					total,
+					"Refund for order",
+					row.id,
+					admin.id,
+					nowIso(),
+				);
+				await run(db, "UPDATE juice_orders SET payment_status = 'refund_wallet' WHERE id = ?", row.id);
+			}
+			const updated = (await one(db, "SELECT * FROM juice_orders WHERE id = ?", row.id))!;
+			return adminOrderOut(updated, await userById(db, updated.user_id));
+		},
+		{ auth: true },
+	);
+
 	route("get", "/admin/plan-requests", "admin", "All plan requests", async (c) => {
 		await currentAdmin(c);
 		const status = c.req.query("status_filter");
