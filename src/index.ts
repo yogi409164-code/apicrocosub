@@ -52,7 +52,17 @@ for (const route of crocoRoutes) {
 		request: {
 			params: params.length ? z.object(Object.fromEntries(params.map((name) => [name, z.string()]))) : undefined,
 			query: route.query.length ? z.object(Object.fromEntries(route.query.map((name) => [name, z.string().optional()]))) : undefined,
-			body: route.body ? { content: { "application/json": { schema: z.object({}).passthrough() } } } : undefined,
+			body: route.body
+				? {
+						content: {
+							"application/json": {
+								schema: route.bodyFields.length
+									? z.object(Object.fromEntries(route.bodyFields.map((name) => [name, z.string()])))
+									: z.object({}).passthrough(),
+							},
+						},
+					}
+				: undefined,
 		},
 		responses: { 200: { description: "OK" } },
 	});

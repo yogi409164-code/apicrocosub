@@ -16,6 +16,7 @@ export type CrocoRoute = {
 	auth: boolean;
 	query: string[];
 	body: boolean;
+	bodyFields: string[];
 };
 
 export const crocoRoutes: CrocoRoute[] = [];
@@ -2074,12 +2075,12 @@ async function refundTimeline(env: Env, paymentId: string) {
 
 // ---- routes ----
 
-type RouteOptions = { auth?: boolean; query?: string[]; status?: number };
+type RouteOptions = { auth?: boolean; query?: string[]; status?: number; bodyFields?: string[] };
 type Handler = (c: Ctx) => Promise<unknown> | unknown;
 
 function routeOn(app: App) {
 	return (method: Method, path: string, tag: string, summary: string, handler: Handler, options: RouteOptions = {}) => {
-		crocoRoutes.push({ method, path, tag, summary, auth: !!options.auth, query: options.query ?? [], body: method !== "get" && method !== "delete" });
+		crocoRoutes.push({ method, path, tag, summary, auth: !!options.auth, query: options.query ?? [], body: method !== "get" && method !== "delete", bodyFields: options.bodyFields ?? [] });
 		app[method](path, async (c: Ctx) => {
 			try {
 				const result = await handler(c);
@@ -2127,6 +2128,24 @@ export function registerCroco(app: App) {
 		await ensureSeed(c.env.DB);
 		return { status: "ok", schema: setting(c.env, "DB_SCHEMA", DB_SCHEMA), created_tables: created, added_columns: [], errors: [], tables: pg ? await pg.tables() : [] };
 	});
+	route(
+		"post",
+		"/db/reset",
+		"health",
+		"Reset all data",
+		async (c) => {
+			const body = await bodyOf(c);
+			const password = reqStr(body, "password");
+			if (password !== "password") throw new HttpError(401, "Wrong password.");
+			const pg = postgresOf(c.env.DB);
+			if (!pg) throw new HttpError(503, "Database is not ready.");
+			const cleared = await pg.reset();
+			seeded = null;
+			await ensureSeed(c.env.DB);
+			return { status: "ok", schema: setting(c.env, "DB_SCHEMA", DB_SCHEMA), cleared_tables: cleared, errors: [] };
+		},
+		{ bodyFields: ["password"] },
+	);
 	route("get", "/db/check", "health", "Check the database", async (c) => {
 		const pg = postgresOf(c.env.DB);
 		const schema = setting(c.env, "DB_SCHEMA", DB_SCHEMA);

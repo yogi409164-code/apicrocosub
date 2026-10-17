@@ -233,6 +233,15 @@ export class PgDatabase {
 		return schemaTables(this.sql, this.schema);
 	}
 
+	/** Deletes every row in the app schema. Tables stay in place. */
+	async reset(): Promise<string[]> {
+		const names = await this.tables();
+		if (!names.length) return [];
+		const quoted = names.map((name) => `${quoteIdent(this.schema)}.${quoteIdent(name)}`).join(", ");
+		await this.sql.unsafe(`TRUNCATE TABLE ${quoted} RESTART IDENTITY CASCADE`);
+		return names;
+	}
+
 	close(): Promise<void> {
 		return this.sql.end({ timeout: 5 });
 	}
