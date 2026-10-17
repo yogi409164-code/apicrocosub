@@ -1690,15 +1690,37 @@ function otpDigits(phone: string): string {
 	return digits.slice(-10);
 }
 
-async function phoneTaken(db: D1Database, phone: string): Promise<boolean> {
-	const rows = await many(db, "SELECT phone FROM users WHERE phone IS NOT NULL");
-	return rows.some((row) => String(row.phone ?? "").replace(/\D/g, "").endsWith(phone));
+async function phoneTaken(db: D1Database, phone: string, ignoreUserId = ""): Promise<boolean> {
+	const rows = await many(db, "SELECT id, phone FROM users WHERE phone IS NOT NULL");
+	return rows.some((row) => String(row.id) !== ignoreUserId && String(row.phone ?? "").replace(/\D/g, "").endsWith(phone));
 }
 
-async function verifyPhoneOtp(c: Ctx, phone: string, otp: string): Promise<string> {
+async function storeAndSendOtp(c: Ctx, number: string): Promise<void> {
+	const db = c.env.DB;
+	const now = Date.now();
+	const row = await one(db, "SELECT * FROM phone_otps WHERE phone = ?", number);
+	if (row && row.sent_at && now - toMs(row.sent_at) < RESEND_SECONDS * 1000) throw new HttpError(400, "Wait a few seconds before requesting another code.");
+	const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, "0");
+	await run(
+		db,
+		"INSERT INTO phone_otps (phone, code_hash, expires_at, sent_at, attempts) VALUES (?, ?, ?, ?, 0) ON CONFLICT(phone) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, sent_at = excluded.sent_at, attempts = 0",
+		number,
+		await hmacHex(secretKey(c.env), `${number}:${code}`),
+		new Date(now + OTP_MINUTES * 60_000).toISOString(),
+		new Date(now).toISOString(),
+	);
+	try {
+		await sendSms(c.env, number, `Your CrocoSip verification code is ${code}. It is valid for ${OTP_MINUTES} minutes.`);
+	} catch (error) {
+		await run(db, "DELETE FROM phone_otps WHERE phone = ?", number);
+		throw error;
+	}
+}
+
+async function verifyPhoneOtp(c: Ctx, phone: string, otp: string, ignoreUserId = ""): Promise<string> {
 	const db = c.env.DB;
 	const number = otpDigits(phone);
-	if (await phoneTaken(db, number)) throw new HttpError(400, "This mobile number is already registered.");
+	if (await phoneTaken(db, number, ignoreUserId)) throw new HttpError(400, "This mobile number is already registered.");
 	const code = otp.replace(/\D/g, "");
 	const row = await one(db, "SELECT * FROM phone_otps WHERE phone = ?", number);
 	if (!row || toMs(row.expires_at) < Date.now()) throw new HttpError(400, "That code has expired. Request a new one.");
@@ -2177,24 +2199,7 @@ export function registerCroco(app: App) {
 		const db = c.env.DB;
 		const number = otpDigits(reqStr(body, "phone", 10, 20));
 		if (await phoneTaken(db, number)) throw new HttpError(400, "This mobile number is already registered.");
-		const now = Date.now();
-		const row = await one(db, "SELECT * FROM phone_otps WHERE phone = ?", number);
-		if (row && row.sent_at && now - toMs(row.sent_at) < RESEND_SECONDS * 1000) throw new HttpError(400, "Wait a few seconds before requesting another code.");
-		const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, "0");
-		await run(
-			db,
-			"INSERT INTO phone_otps (phone, code_hash, expires_at, sent_at, attempts) VALUES (?, ?, ?, ?, 0) ON CONFLICT(phone) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, sent_at = excluded.sent_at, attempts = 0",
-			number,
-			await hmacHex(secretKey(c.env), `${number}:${code}`),
-			new Date(now + OTP_MINUTES * 60_000).toISOString(),
-			new Date(now).toISOString(),
-		);
-		try {
-			await sendSms(c.env, number, `Your CrocoSip verification code is ${code}. It is valid for ${OTP_MINUTES} minutes.`);
-		} catch (error) {
-			await run(db, "DELETE FROM phone_otps WHERE phone = ?", number);
-			throw error;
-		}
+		await storeAndSendOtp(c, number);
 		return { sent: true };
 	});
 
@@ -2272,6 +2277,22 @@ export function registerCroco(app: App) {
 	}, { auth: true });
 
 	route(
+		"post",
+		"/auth/me/phone/otp",
+		"auth",
+		"Send a code to verify my phone",
+		async (c) => {
+			const body = await bodyOf(c);
+			const user = await currentUser(c);
+			const number = otpDigits(reqStr(body, "phone", 10, 20));
+			if (await phoneTaken(c.env.DB, number, String(user.id))) throw new HttpError(400, "This mobile number is already registered.");
+			await storeAndSendOtp(c, number);
+			return { sent: true };
+		},
+		{ auth: true },
+	);
+
+	route(
 		"patch",
 		"/auth/me/phone",
 		"auth",
@@ -2279,8 +2300,10 @@ export function registerCroco(app: App) {
 		async (c) => {
 			const body = await bodyOf(c);
 			const phone = reqStr(body, "phone", 10, 20);
+			const otp = reqStr(body, "otp", 4, 8);
 			const user = await currentUser(c);
-			await run(c.env.DB, "UPDATE users SET phone = ? WHERE id = ?", normalizePhone(phone), user.id);
+			const verified = await verifyPhoneOtp(c, phone, otp, String(user.id));
+			await run(c.env.DB, "UPDATE users SET phone = ? WHERE id = ?", normalizePhone(verified), user.id);
 			return userOut(c.env.DB, await reloadUser(c.env.DB, user));
 		},
 		{ auth: true },
