@@ -2663,8 +2663,7 @@ export function registerCroco(app: App) {
 			const method = (optStr(body, "payment_method", 24, "COD") ?? "COD").toUpperCase();
 			if (!["COD", "WALLET"].includes(method)) throw new HttpError(400, "Choose a valid payment method.");
 			const row = await createOrder(c.env.DB, user, items, deliveryType, method);
-			const rewardId = method === "WALLET" ? await safeScratchReward(c.env.DB, user, String(row.id), num(row.total)) : null;
-			return { ...orderOut(row), reward_id: rewardId };
+			return { ...orderOut(row), reward_id: null };
 		},
 		{ auth: true, status: 201 },
 	);
@@ -2857,7 +2856,8 @@ export function registerCroco(app: App) {
 			}
 			await activatePaidRequest(db, created);
 			const saved = (await one(db, "SELECT * FROM plan_requests WHERE id = ?", id))!;
-			const rewardId = await safeScratchReward(db, user, id, rupeesFromPrice(price));
+			const upiPaid = method === "WALLET" ? 0 : moneyOf(total - debit);
+			const rewardId = upiPaid >= 1 ? await safeScratchReward(db, user, id, upiPaid) : null;
 			return { ...requestOut(saved), reward_id: rewardId };
 		},
 		{ auth: true, status: 201 },
