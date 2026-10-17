@@ -1243,6 +1243,7 @@ function requestOut(row: Row) {
 		delivery_lng: numOrNull(row.delivery_lng),
 		delivery_address: text(row.delivery_address),
 		delivery_locality: text(row.delivery_locality),
+		fulfillment: String(row.fulfillment || "delivery") === "takeaway" ? "takeaway" : "delivery",
 	};
 }
 
@@ -2601,12 +2602,14 @@ export function registerCroco(app: App) {
 			});
 			const upgradeMode = literal(body, "upgrade_mode", UPGRADE_MODES, "");
 			const startsOn = optStr(body, "starts_on", 10);
+			const fulfillment = literal(body, "fulfillment", ["delivery", "takeaway"], "delivery");
 			const methodIn = literal(body, "payment_method", ["UPI", "WALLET", "SPLIT"], "UPI");
 			const user = await currentUser(c);
 			const db = c.env.DB;
+			const takeaway = fulfillment === "takeaway";
 			const hasPin = user.location_lat != null && user.location_lng != null;
 			const hasAddress = !!String(user.location_address || user.location_locality || "").trim();
-			if (!hasPin || !hasAddress) throw new HttpError(400, "Add your delivery location before requesting a plan.");
+			if (!takeaway && (!hasPin || !hasAddress)) throw new HttpError(400, "Add your delivery location before requesting a plan.");
 			const total = rupeesFromPrice(price);
 			const walletInput = optNum(body, "wallet_amount", { ge: 0, le: 100000 });
 			let method = methodIn;
@@ -2647,8 +2650,8 @@ export function registerCroco(app: App) {
 				prep(db, "UPDATE plan_requests SET status = 'cancelled', decided_at = ? WHERE user_id = ? AND status = 'pending'", nowIso(), user.id),
 				prep(
 					db,
-					`INSERT INTO plan_requests (id, user_id, plan_id, plan_name, price, period, bottles, details, days, items, upgrade_mode, starts_on, skipped_dates, item_swaps, slot_order, delivery_lat, delivery_lng, delivery_address, delivery_locality, status, created_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '{}', '[]', ?, ?, ?, ?, 'pending', ?)`,
+					`INSERT INTO plan_requests (id, user_id, plan_id, plan_name, price, period, bottles, details, days, items, upgrade_mode, starts_on, skipped_dates, item_swaps, slot_order, delivery_lat, delivery_lng, delivery_address, delivery_locality, fulfillment, status, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '{}', '[]', ?, ?, ?, ?, ?, 'pending', ?)`,
 					id,
 					user.id,
 					planId,
@@ -2661,10 +2664,11 @@ export function registerCroco(app: App) {
 					JSON.stringify(items),
 					upgradeMode,
 					startsOn,
-					user.location_lat,
-					user.location_lng,
-					user.location_address,
-					user.location_locality,
+					takeaway ? null : user.location_lat,
+					takeaway ? null : user.location_lng,
+					takeaway ? null : user.location_address,
+					takeaway ? null : user.location_locality,
+					fulfillment,
 					nowIso(),
 				),
 			]);

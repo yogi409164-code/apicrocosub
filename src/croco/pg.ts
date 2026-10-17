@@ -255,6 +255,7 @@ export async function schemaTables(sql: Sql, schema: string): Promise<string[]> 
 export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(schemaSql(schema)).simple();
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.plans ADD COLUMN IF NOT EXISTS items TEXT NOT NULL DEFAULT ''`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.plan_requests ADD COLUMN IF NOT EXISTS fulfillment VARCHAR(16) NOT NULL DEFAULT 'delivery'`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS show_delivery_instant BOOLEAN NOT NULL DEFAULT TRUE`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS show_delivery_slot BOOLEAN NOT NULL DEFAULT TRUE`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_slots TEXT NOT NULL DEFAULT '[]'`);
@@ -374,6 +375,7 @@ CREATE TABLE IF NOT EXISTS ${s}.plan_requests (
   delivery_lng DOUBLE PRECISION,
   delivery_address TEXT,
   delivery_locality VARCHAR(160),
+  fulfillment VARCHAR(16) NOT NULL DEFAULT 'delivery',
   status VARCHAR(16) NOT NULL DEFAULT 'pending',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   decided_at TIMESTAMPTZ
