@@ -24,6 +24,7 @@ export const APP_TABLES = [
 	"saved_addresses",
 	"juices",
 	"juice_categories",
+	"stores",
 	"store_settings",
 	"plans",
 	"plan_requests",
@@ -277,6 +278,7 @@ export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS reward_min_percent INTEGER NOT NULL DEFAULT 1`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS reward_max_percent INTEGER NOT NULL DEFAULT 10`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juices ADD COLUMN IF NOT EXISTS stock_qty INTEGER`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juices ADD COLUMN IF NOT EXISTS store_id VARCHAR(64)`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS packaging_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_gst DOUBLE PRECISION NOT NULL DEFAULT 0`);
@@ -347,6 +349,13 @@ CREATE TABLE IF NOT EXISTS ${s}.juices (
 CREATE TABLE IF NOT EXISTS ${s}.juice_categories (
   name VARCHAR(80) PRIMARY KEY,
   position INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS ${s}.stores (
+  id VARCHAR(64) PRIMARY KEY,
+  name VARCHAR(160) NOT NULL,
+  locality VARCHAR(160) NOT NULL DEFAULT '',
+  address TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS ${s}.store_settings (
   id VARCHAR(64) PRIMARY KEY,

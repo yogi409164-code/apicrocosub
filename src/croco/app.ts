@@ -24,6 +24,7 @@ export const crocoRoutes: CrocoRoute[] = [];
 const ADMIN_PAGES = [
 	"dashboard",
 	"juices",
+	"stores",
 	"plans",
 	"requests",
 	"orders",
@@ -819,6 +820,7 @@ function juiceOut(row: Row, flags?: { in_poster?: boolean; in_plans?: boolean; a
 		offer_percent: num(row.offer_percent),
 		ml: row.ml == null ? mlFromName(String(row.name ?? "")) : num(row.ml),
 		stock_qty: row.stock_qty == null || row.stock_qty === "" ? null : Math.max(0, int(row.stock_qty, 0)),
+		store_id: text(row.store_id),
 		created_at: text(row.created_at),
 	};
 }
@@ -847,6 +849,41 @@ async function juiceById(db: D1Database, id: string): Promise<Row> {
 	return row;
 }
 
+async function bindStore(db: D1Database, storeId: string | null | undefined): Promise<string | null> {
+	const cleaned = storeId?.trim() ?? "";
+	if (!cleaned) return null;
+	const row = await one(db, "SELECT id FROM stores WHERE id = ?", cleaned);
+	if (!row) throw new HttpError(400, "Store not found.");
+	return cleaned;
+}
+
+async function ensureCatalogStores(db: D1Database): Promise<void> {
+	const total = num((await one(db, "SELECT COUNT(*) AS total FROM stores"))?.total);
+	if (total > 0) return;
+	const settings = await storeRow(db);
+	await run(
+		db,
+		"INSERT INTO stores (id, name, locality, address, created_at) VALUES (?, ?, ?, ?, ?)",
+		"default",
+		String(settings.name || "CrocoSip Store"),
+		String(settings.locality || ""),
+		String(settings.address || ""),
+		nowIso(),
+	);
+	await run(db, "UPDATE juices SET store_id = 'default' WHERE store_id IS NULL");
+}
+
+async function catalogStoreOut(db: D1Database, row: Row) {
+	const count = num((await one(db, "SELECT COUNT(*) AS total FROM juices WHERE archived = FALSE AND store_id = ?", row.id))?.total);
+	return {
+		id: String(row.id),
+		name: String(row.name ?? ""),
+		locality: String(row.locality ?? ""),
+		address: String(row.address ?? ""),
+		item_count: count,
+	};
+}
+
 async function applyCategoryOrder(db: D1Database, names: string[]): Promise<string[]> {
 	await syncCategories(db);
 	const rows = await many(db, "SELECT * FROM juice_categories");
@@ -872,6 +909,7 @@ function menuJuice(raw: unknown, index: number): {
 	in_plans: boolean;
 	offer_percent: number;
 	stock_qty?: number | null;
+	store_id?: string | null;
 	created_at: string | null;
 } {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) invalid(`juices.${index}`, "Input should be a valid object", raw);
@@ -894,6 +932,11 @@ function menuJuice(raw: unknown, index: number): {
 			? row.stock_qty == null || row.stock_qty === ""
 				? null
 				: Math.max(0, Math.trunc(Number(row.stock_qty) || 0))
+			: undefined,
+		store_id: Object.prototype.hasOwnProperty.call(row, "store_id")
+			? typeof row.store_id === "string" && row.store_id.trim()
+				? row.store_id.trim()
+				: null
 			: undefined,
 		created_at: typeof row.created_at === "string" ? row.created_at : null,
 	};
@@ -3503,6 +3546,45 @@ export function registerCroco(app: App) {
 	);
 
 	// ---- admin: catalog ----
+	route("get", "/admin/stores", "admin", "List stores and their item counts", async (c) => {
+		await currentAdmin(c);
+		const db = c.env.DB;
+		await ensureCatalogStores(db);
+		const rows = await many(db, "SELECT * FROM stores ORDER BY created_at ASC");
+		return Promise.all(rows.map((row) => catalogStoreOut(db, row)));
+	}, { auth: true });
+
+	route(
+		"post",
+		"/admin/stores",
+		"admin",
+		"Create a store",
+		async (c) => {
+			const body = await bodyOf(c);
+			const name = reqStr(body, "name", 1, 160).trim();
+			const locality = optStr(body, "locality", 160) ?? "";
+			const address = optStr(body, "address", 500) ?? "";
+			await currentAdmin(c);
+			const db = c.env.DB;
+			const id = uuid();
+			await run(db, "INSERT INTO stores (id, name, locality, address, created_at) VALUES (?, ?, ?, ?, ?)", id, name, locality.trim(), address.trim(), nowIso());
+			return catalogStoreOut(db, (await one(db, "SELECT * FROM stores WHERE id = ?", id))!);
+		},
+		{ auth: true, status: 201 },
+	);
+
+	route("delete", "/admin/stores/:storeId", "admin", "Delete an empty store", async (c) => {
+		await currentAdmin(c);
+		const db = c.env.DB;
+		const id = c.req.param("storeId");
+		const store = await one(db, "SELECT id FROM stores WHERE id = ?", id);
+		if (!store) throw new HttpError(404, "Store not found.");
+		const count = num((await one(db, "SELECT COUNT(*) AS total FROM juices WHERE store_id = ?", id))?.total);
+		if (count) throw new HttpError(400, "This store still has items.");
+		await run(db, "DELETE FROM stores WHERE id = ?", id);
+		return c.body(null, 204);
+	}, { auth: true });
+
 	route("get", "/admin/juices", "admin", "All juices", async (c) => {
 		await currentAdmin(c);
 		return (await listJuices(c.env.DB, null)).map(juiceOut);
@@ -3518,6 +3600,7 @@ export function registerCroco(app: App) {
 		in_poster: optBool(body, "in_poster") ?? false,
 		in_plans: optBool(body, "in_plans") ?? true,
 		offer_percent: optNum(body, "offer_percent", { ge: 0, le: 90, fallback: 0 }) ?? 0,
+		store_id: Object.prototype.hasOwnProperty.call(body, "store_id") ? optStr(body, "store_id") : undefined,
 	});
 
 	route(
@@ -3532,9 +3615,10 @@ export function registerCroco(app: App) {
 			const name = input.name.trim() || "Untitled juice";
 			const category = input.category.trim() || "Juices";
 			const id = uuid();
+			const storeId = await bindStore(db, input.store_id);
 			await run(
 				db,
-				`INSERT INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, ml, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, ${sqlBool(input.in_poster)}, ${sqlBool(input.in_plans)}, ?, ?, ?)`,
+				`INSERT INTO juices (id, name, category, sku, price, description, image_url, archived, in_poster, in_plans, offer_percent, ml, store_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, ${sqlBool(input.in_poster)}, ${sqlBool(input.in_plans)}, ?, ?, ?, ?)`,
 				id,
 				name,
 				category,
@@ -3544,6 +3628,7 @@ export function registerCroco(app: App) {
 				await normalizeStoredImage(db, input.image_url),
 				input.offer_percent,
 				mlFromName(name),
+				storeId,
 				nowIso(),
 			);
 			await ensureCategory(db, category);
@@ -3610,6 +3695,9 @@ export function registerCroco(app: App) {
 			if (input.stock_qty !== undefined) {
 				await run(db, "UPDATE juices SET stock_qty = ? WHERE id = ?", input.stock_qty, id);
 			}
+			if (input.store_id !== undefined) {
+				await run(db, "UPDATE juices SET store_id = ? WHERE id = ?", await bindStore(db, input.store_id), id);
+			}
 		}
 		const names = categories.length ? await applyCategoryOrder(db, categories) : await categoryNames(db);
 		return { imported: created + updated, created, updated, categories: names };
@@ -3635,9 +3723,11 @@ export function registerCroco(app: App) {
 			const juice = await juiceById(db, c.req.param("juiceId"));
 			const name = input.name.trim() || String(juice.name);
 			const category = input.category.trim() || "Juices";
+			const storeSql = input.store_id !== undefined ? ", store_id = ?" : "";
+			const storeParam = input.store_id !== undefined ? [await bindStore(db, input.store_id)] : [];
 			await run(
 				db,
-				`UPDATE juices SET name = ?, category = ?, sku = ?, price = ?, description = ?, image_url = ?, in_poster = ${sqlBool(input.in_poster)}, in_plans = ${sqlBool(input.in_plans)}, offer_percent = ?, ml = ? WHERE id = ?`,
+				`UPDATE juices SET name = ?, category = ?, sku = ?, price = ?, description = ?, image_url = ?, in_poster = ${sqlBool(input.in_poster)}, in_plans = ${sqlBool(input.in_plans)}, offer_percent = ?, ml = ?${storeSql} WHERE id = ?`,
 				name,
 				category,
 				input.sku?.trim() || null,
@@ -3646,6 +3736,7 @@ export function registerCroco(app: App) {
 				await normalizeStoredImage(db, input.image_url),
 				input.offer_percent,
 				mlFromName(name),
+				...storeParam,
 				juice.id,
 			);
 			await ensureCategory(db, category);
