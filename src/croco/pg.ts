@@ -279,6 +279,8 @@ export async function createSchema(sql: Sql, schema: string): Promise<void> {
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS reward_max_percent INTEGER NOT NULL DEFAULT 10`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juices ADD COLUMN IF NOT EXISTS stock_qty INTEGER`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juices ADD COLUMN IF NOT EXISTS store_id VARCHAR(64)`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.roles ADD COLUMN IF NOT EXISTS store_ids TEXT NOT NULL DEFAULT '[]'`);
+	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.users ADD COLUMN IF NOT EXISTS store_ids TEXT NOT NULL DEFAULT '[]'`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS packaging_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
 	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_gst DOUBLE PRECISION NOT NULL DEFAULT 0`);
@@ -297,6 +299,7 @@ CREATE TABLE IF NOT EXISTS ${s}.roles (
   name VARCHAR(32) PRIMARY KEY,
   description VARCHAR(240) NOT NULL DEFAULT '',
   pages TEXT NOT NULL DEFAULT '[]',
+  store_ids TEXT NOT NULL DEFAULT '[]',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS ${s}.users (
@@ -318,6 +321,7 @@ CREATE TABLE IF NOT EXISTS ${s}.users (
   special_lat DOUBLE PRECISION,
   special_lng DOUBLE PRECISION,
   wallet_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+  store_ids TEXT NOT NULL DEFAULT '[]',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS ${s}.saved_addresses (

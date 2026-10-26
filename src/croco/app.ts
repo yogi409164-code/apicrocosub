@@ -479,6 +479,40 @@ function rolePages(row: Row | null, name: string): string[] {
 	return row ? readPages(row.pages) : [];
 }
 
+function readStoreIds(raw: unknown): string[] {
+	const value = jsonValue<unknown>(typeof raw === "string" ? raw : "[]", []);
+	if (!Array.isArray(value)) return [];
+	const seen: string[] = [];
+	for (const item of value) {
+		if (typeof item !== "string") continue;
+		const cleaned = item.trim();
+		if (cleaned && cleaned.length <= 64 && !seen.includes(cleaned)) seen.push(cleaned);
+	}
+	return seen;
+}
+
+async function allowedStoreIds(db: D1Database, user: Row): Promise<string[] | null> {
+	const name = String(user.role ?? "customer").trim().toLowerCase() || "customer";
+	if (name === "admin" || user.username === "admin") return null;
+	const own = readStoreIds(user.store_ids);
+	if (own.length) return own;
+	const role = await one(db, "SELECT store_ids FROM roles WHERE name = ?", name);
+	const roleIds = readStoreIds(role?.store_ids);
+	return roleIds.length ? roleIds : null;
+}
+
+function storeAllowed(allowed: string[] | null, storeId: unknown): boolean {
+	if (allowed === null) return true;
+	const key = String(storeId ?? "").trim() || "default";
+	return allowed.includes(key);
+}
+
+async function assertStoreAccess(db: D1Database, user: Row, storeId: unknown): Promise<void> {
+	if (!storeAllowed(await allowedStoreIds(db, user), storeId)) {
+		throw new HttpError(403, "You do not have access to this store.");
+	}
+}
+
 async function seedRoles(db: D1Database): Promise<void> {
 	await db.batch([
 		prep(db, "INSERT OR IGNORE INTO roles (name, description, pages, created_at) VALUES ('admin', 'Full admin access to the store.', ?, ?)", JSON.stringify(ADMIN_PAGES), nowIso()),
@@ -505,6 +539,7 @@ async function roleOut(db: D1Database, row: Row) {
 		user_count: await countUsers(db, name),
 		system: SYSTEM_ROLES.includes(name),
 		pages: rolePages(row, name),
+		store_ids: name === "admin" ? [] : readStoreIds(row.store_ids),
 	};
 }
 
@@ -543,6 +578,7 @@ async function userOut(db: D1Database, user: Row) {
 		special_lng: numOrNull(user.special_lng),
 		saved_addresses: (await savedAddresses(db, user.id)).map(addressOut),
 		wallet_balance: Math.round(num(user.wallet_balance) * 100) / 100,
+		store_ids: await allowedStoreIds(db, user),
 	};
 }
 
@@ -735,7 +771,13 @@ async function debitWallet(
 }
 
 async function adminUserOut(db: D1Database, user: Row) {
-	return { ...(await userOut(db, user)), role: String(user.role || "customer"), created_at: text(user.created_at) };
+	const role = String(user.role || "customer");
+	return {
+		...(await userOut(db, user)),
+		role,
+		created_at: text(user.created_at),
+		assigned_store_ids: role === "admin" || user.username === "admin" ? [] : readStoreIds(user.store_ids),
+	};
 }
 
 async function findUser(db: D1Database, identifier: string): Promise<Row | null> {
@@ -3237,9 +3279,13 @@ export function registerCroco(app: App) {
 			if (input.location_address !== null) next.location_address = blank(input.location_address);
 			if (input.location_locality !== null) next.location_locality = blank(input.location_locality);
 			if (input.special_access !== null) Object.assign(next, specialAccessFields(next, input.special_access));
+			if (Object.prototype.hasOwnProperty.call(body, "store_ids")) {
+				const ids = String(next.role || "") === "admin" || next.username === "admin" ? [] : readStoreIds(body.store_ids);
+				next.store_ids = JSON.stringify(ids);
+			}
 			await run(
 				db,
-				"UPDATE users SET name = ?, phone = ?, email = ?, username = ?, role = ?, location_address = ?, location_locality = ?, special_access = ?, special_lat = ?, special_lng = ? WHERE id = ?",
+				"UPDATE users SET name = ?, phone = ?, email = ?, username = ?, role = ?, location_address = ?, location_locality = ?, special_access = ?, special_lat = ?, special_lng = ?, store_ids = ? WHERE id = ?",
 				next.name,
 				next.phone,
 				next.email,
@@ -3250,6 +3296,7 @@ export function registerCroco(app: App) {
 				bool(next.special_access) ? 1 : 0,
 				next.special_lat,
 				next.special_lng,
+				typeof next.store_ids === "string" ? next.store_ids : JSON.stringify(readStoreIds(user.store_ids)),
 				user.id,
 			);
 			return adminUserOut(db, (await userById(db, user.id))!);
@@ -3317,6 +3364,10 @@ export function registerCroco(app: App) {
 			if (!row) throw new HttpError(404, "Role not found.");
 			if (description !== null) await run(c.env.DB, "UPDATE roles SET description = ? WHERE name = ?", description.trim(), name);
 			if (pages !== null) await run(c.env.DB, "UPDATE roles SET pages = ? WHERE name = ?", JSON.stringify(name === "admin" ? ADMIN_PAGES : readPages(JSON.stringify(pages))), name);
+			if (Object.prototype.hasOwnProperty.call(body, "store_ids")) {
+				const ids = name === "admin" ? [] : readStoreIds(body.store_ids);
+				await run(c.env.DB, "UPDATE roles SET store_ids = ? WHERE name = ?", JSON.stringify(ids), name);
+			}
 			return roleOut(c.env.DB, (await one(c.env.DB, "SELECT * FROM roles WHERE name = ?", name))!);
 		},
 		{ auth: true },
@@ -3547,11 +3598,13 @@ export function registerCroco(app: App) {
 
 	// ---- admin: catalog ----
 	route("get", "/admin/stores", "admin", "List stores and their item counts", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
 		const db = c.env.DB;
 		await ensureCatalogStores(db);
+		const allowed = await allowedStoreIds(db, admin);
 		const rows = await many(db, "SELECT * FROM stores ORDER BY created_at ASC");
-		return Promise.all(rows.map((row) => catalogStoreOut(db, row)));
+		const visible = allowed === null ? rows : rows.filter((row) => allowed.includes(String(row.id)));
+		return Promise.all(visible.map((row) => catalogStoreOut(db, row)));
 	}, { auth: true });
 
 	route(
@@ -3564,8 +3617,9 @@ export function registerCroco(app: App) {
 			const name = reqStr(body, "name", 1, 160).trim();
 			const locality = optStr(body, "locality", 160) ?? "";
 			const address = optStr(body, "address", 500) ?? "";
-			await currentAdmin(c);
+			const admin = await currentAdmin(c);
 			const db = c.env.DB;
+			if ((await allowedStoreIds(db, admin)) !== null) throw new HttpError(403, "You can add a store only with access to every store.");
 			const id = uuid();
 			await run(db, "INSERT INTO stores (id, name, locality, address, created_at) VALUES (?, ?, ?, ?, ?)", id, name, locality.trim(), address.trim(), nowIso());
 			return catalogStoreOut(db, (await one(db, "SELECT * FROM stores WHERE id = ?", id))!);
@@ -3574,8 +3628,9 @@ export function registerCroco(app: App) {
 	);
 
 	route("delete", "/admin/stores/:storeId", "admin", "Delete an empty store", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
 		const db = c.env.DB;
+		if ((await allowedStoreIds(db, admin)) !== null) throw new HttpError(403, "You can add a store only with access to every store.");
 		const id = c.req.param("storeId");
 		const store = await one(db, "SELECT id FROM stores WHERE id = ?", id);
 		if (!store) throw new HttpError(404, "Store not found.");
@@ -3586,8 +3641,10 @@ export function registerCroco(app: App) {
 	}, { auth: true });
 
 	route("get", "/admin/juices", "admin", "All juices", async (c) => {
-		await currentAdmin(c);
-		return (await listJuices(c.env.DB, null)).map(juiceOut);
+		const admin = await currentAdmin(c);
+		const allowed = await allowedStoreIds(c.env.DB, admin);
+		const rows = await listJuices(c.env.DB, null);
+		return (allowed === null ? rows : rows.filter((row) => storeAllowed(allowed, row.store_id))).map(juiceOut);
 	}, { auth: true });
 
 	const readJuice = (body: Body) => ({
@@ -3610,8 +3667,9 @@ export function registerCroco(app: App) {
 		"Create a juice",
 		async (c) => {
 			const input = readJuice(await bodyOf(c));
-			await currentAdmin(c);
+			const admin = await currentAdmin(c);
 			const db = c.env.DB;
+			await assertStoreAccess(db, admin, input.store_id ?? null);
 			const name = input.name.trim() || "Untitled juice";
 			const category = input.category.trim() || "Juices";
 			const id = uuid();
@@ -3638,8 +3696,11 @@ export function registerCroco(app: App) {
 	);
 
 	route("get", "/admin/juices/export", "admin", "Export the menu", async (c) => {
-		await currentAdmin(c);
-		return { version: 1, juices: (await listJuices(c.env.DB, null)).map(juiceOut), categories: await categoryNames(c.env.DB) };
+		const admin = await currentAdmin(c);
+		const allowed = await allowedStoreIds(c.env.DB, admin);
+		const rows = await listJuices(c.env.DB, null);
+		const visible = allowed === null ? rows : rows.filter((row) => storeAllowed(allowed, row.store_id));
+		return { version: 1, juices: visible.map(juiceOut), categories: await categoryNames(c.env.DB) };
 	}, { auth: true });
 
 	route("post", "/admin/juices/import", "admin", "Import a menu", async (c) => {
@@ -3650,7 +3711,8 @@ export function registerCroco(app: App) {
 			if (typeof name !== "string") invalid(`categories.${index}`, "Input should be a valid string", name);
 			return name;
 		});
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
+		if ((await allowedStoreIds(c.env.DB, admin)) !== null) throw new HttpError(403, "Import is available when you can access every store.");
 		const db = c.env.DB;
 		let created = 0;
 		let updated = 0;
@@ -3718,9 +3780,11 @@ export function registerCroco(app: App) {
 		"Update a juice",
 		async (c) => {
 			const input = readJuice(await bodyOf(c));
-			await currentAdmin(c);
+			const admin = await currentAdmin(c);
 			const db = c.env.DB;
 			const juice = await juiceById(db, c.req.param("juiceId"));
+			await assertStoreAccess(db, admin, juice.store_id);
+			if (input.store_id !== undefined) await assertStoreAccess(db, admin, input.store_id);
 			const name = input.name.trim() || String(juice.name);
 			const category = input.category.trim() || "Juices";
 			const storeSql = input.store_id !== undefined ? ", store_id = ?" : "";
@@ -3758,8 +3822,9 @@ export function registerCroco(app: App) {
 			const offer = optNum(body, "offer_percent", { ge: 0, le: 90 });
 			const trackStock = optBool(body, "track_stock");
 			const stockQty = optNum(body, "stock_qty", { ge: 0, le: 100000, integer: true });
-			await currentAdmin(c);
+			const admin = await currentAdmin(c);
 			const juice = await juiceById(c.env.DB, c.req.param("juiceId"));
+			await assertStoreAccess(c.env.DB, admin, juice.store_id);
 			const nextPoster = inPoster ?? bool(juice.in_poster);
 			const nextPlans = inPlans ?? (juice.in_plans == null ? true : bool(juice.in_plans));
 			let nextStock: number | null | undefined;
@@ -3784,16 +3849,18 @@ export function registerCroco(app: App) {
 	);
 
 	const setArchived = async (c: Ctx, archived: boolean) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
 		const juice = await juiceById(c.env.DB, c.req.param("juiceId"));
+		await assertStoreAccess(c.env.DB, admin, juice.store_id);
 		await run(c.env.DB, "UPDATE juices SET archived = ? WHERE id = ?", archived ? 1 : 0, juice.id);
 		return juiceOut(await juiceById(c.env.DB, String(juice.id)));
 	};
 	route("post", "/admin/juices/:juiceId/archive", "admin", "Hide a juice", (c) => setArchived(c, true), { auth: true });
 	route("post", "/admin/juices/:juiceId/restore", "admin", "Show a juice again", (c) => setArchived(c, false), { auth: true });
 	route("delete", "/admin/juices/:juiceId", "admin", "Delete a juice", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
 		const juice = await juiceById(c.env.DB, c.req.param("juiceId"));
+		await assertStoreAccess(c.env.DB, admin, juice.store_id);
 		await run(c.env.DB, "DELETE FROM juices WHERE id = ?", juice.id);
 		return { ok: true };
 	}, { auth: true });
