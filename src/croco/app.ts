@@ -480,7 +480,7 @@ function rolePages(row: Row | null, name: string): string[] {
 }
 
 function readStoreIds(raw: unknown): string[] {
-	const value = jsonValue<unknown>(typeof raw === "string" ? raw : "[]", []);
+	const value = Array.isArray(raw) ? raw : jsonValue<unknown>(typeof raw === "string" ? raw : "[]", []);
 	if (!Array.isArray(value)) return [];
 	const seen: string[] = [];
 	for (const item of value) {
@@ -3343,7 +3343,7 @@ export function registerCroco(app: App) {
 			const key = name.trim().toLowerCase().replaceAll(" ", "_");
 			if (!ROLE_NAME.test(key)) throw new HttpError(400, "Use a short role name like delivery or staff.");
 			if (await one(c.env.DB, "SELECT name FROM roles WHERE name = ?", key)) throw new HttpError(400, "That role already exists.");
-			await run(c.env.DB, "INSERT INTO roles (name, description, pages, created_at) VALUES (?, ?, '[]', ?)", key, description.trim(), nowIso());
+			await run(c.env.DB, "INSERT INTO roles (name, description, pages, store_ids, created_at) VALUES (?, ?, '[]', '[]', ?)", key, description.trim(), nowIso());
 			return roleOut(c.env.DB, (await one(c.env.DB, "SELECT * FROM roles WHERE name = ?", key))!);
 		},
 		{ auth: true, status: 201 },
