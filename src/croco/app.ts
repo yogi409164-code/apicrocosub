@@ -507,6 +507,62 @@ function storeAllowed(allowed: string[] | null, storeId: unknown): boolean {
 	return allowed.includes(key);
 }
 
+function collectIds(raw: unknown): string[] {
+	const ids: string[] = [];
+	const walk = (value: unknown) => {
+		if (Array.isArray(value)) {
+			for (const item of value) {
+				if (typeof item === "string" && item) ids.push(item);
+				else walk(item);
+			}
+			return;
+		}
+		if (value && typeof value === "object") {
+			for (const [key, child] of Object.entries(value as Row)) {
+				if (key === "id" && typeof child === "string" && child) ids.push(child);
+				else if (child && typeof child === "object") walk(child);
+			}
+		}
+	};
+	if (typeof raw === "string") walk(jsonValue(raw, null));
+	else walk(raw);
+	return ids;
+}
+
+function touchesStores(allowedIds: Set<string> | null, ...raws: unknown[]): boolean {
+	if (allowedIds === null) return true;
+	return raws.some((raw) => collectIds(raw).some((id) => allowedIds.has(id)));
+}
+
+async function juiceIdSet(db: D1Database, user: Row): Promise<Set<string> | null> {
+	const allowed = await allowedStoreIds(db, user);
+	if (allowed === null) return null;
+	const ids = new Set<string>();
+	for (const row of await many(db, "SELECT id, store_id FROM juices")) {
+		if (storeAllowed(allowed, row.store_id)) ids.add(String(row.id));
+	}
+	return ids;
+}
+
+async function customerIdSet(db: D1Database, user: Row): Promise<Set<string> | null> {
+	const juiceIds = await juiceIdSet(db, user);
+	if (juiceIds === null) return null;
+	const ids = new Set<string>();
+	for (const row of await many(db, "SELECT user_id, items FROM juice_orders")) {
+		if (touchesStores(juiceIds, row.items)) ids.add(String(row.user_id));
+	}
+	for (const row of await many(db, "SELECT user_id, items, item_swaps FROM plan_requests")) {
+		if (touchesStores(juiceIds, row.items, row.item_swaps)) ids.add(String(row.user_id));
+	}
+	return ids;
+}
+
+async function assertRecordAccess(db: D1Database, user: Row, ...raws: unknown[]): Promise<void> {
+	if (!touchesStores(await juiceIdSet(db, user), ...raws)) {
+		throw new HttpError(403, "You do not have access to this store.");
+	}
+}
+
 async function assertStoreAccess(db: D1Database, user: Row, storeId: unknown): Promise<void> {
 	if (!storeAllowed(await allowedStoreIds(db, user), storeId)) {
 		throw new HttpError(403, "You do not have access to this store.");
@@ -1548,8 +1604,8 @@ async function writeSkipped(db: D1Database, row: Row, skipped: Set<string>): Pro
 	await run(db, "UPDATE plan_requests SET skipped_dates = ?, ends_on = ? WHERE id = ?", JSON.stringify([...skipped].sort()), placedEnd(start, planDays(row), skipped), row.id);
 }
 
-async function requestCounts(db: D1Database) {
-	const rows = await many(db, "SELECT * FROM plan_requests");
+async function requestCounts(db: D1Database, rows?: Row[]) {
+	rows = rows ?? await many(db, "SELECT * FROM plan_requests");
 	const today = todayIso();
 	const accepted = rows.filter((row) => row.status === "accepted");
 	return {
@@ -3220,9 +3276,11 @@ export function registerCroco(app: App) {
 
 	// ---- admin: users and roles ----
 	route("get", "/admin/users", "admin", "All users", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
+		const customers = await customerIdSet(c.env.DB, admin);
 		const rows = await many(c.env.DB, "SELECT * FROM users ORDER BY created_at DESC");
-		return Promise.all(rows.map((row) => adminUserOut(c.env.DB, row)));
+		const visible = customers === null ? rows : rows.filter((row) => String(row.role || "customer") !== "customer" || customers.has(String(row.id)));
+		return Promise.all(visible.map((row) => adminUserOut(c.env.DB, row)));
 	}, { auth: true });
 
 	route(
@@ -3391,14 +3449,25 @@ export function registerCroco(app: App) {
 	);
 
 	route("get", "/admin/stats", "admin", "Dashboard numbers", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
 		const db = c.env.DB;
-		const users = await many(db, "SELECT role, provider, location_lat FROM users");
-		const juices = await many(db, "SELECT archived FROM juices");
-		const plans = await one(db, "SELECT COUNT(*) AS total FROM plans");
-		const counts = await requestCounts(db);
-		const orders = await many(db, "SELECT status FROM juice_orders");
-		const marks = await many(db, "SELECT status FROM delivery_marks WHERE delivery_date = ?", todayIso());
+		const juiceIds = await juiceIdSet(db, admin);
+		const customers = await customerIdSet(db, admin);
+		let users = await many(db, "SELECT id, role, provider, location_lat FROM users");
+		let juices = await many(db, "SELECT id, store_id, archived FROM juices");
+		let planRows = await many(db, "SELECT items FROM plans");
+		let orders = await many(db, "SELECT status, items FROM juice_orders");
+		let requests = await many(db, "SELECT * FROM plan_requests");
+		let marks = await many(db, "SELECT status, user_id FROM delivery_marks WHERE delivery_date = ?", todayIso());
+		if (juiceIds !== null) {
+			users = customers === null ? users : users.filter((row) => String(row.role || "customer") !== "customer" || customers.has(String(row.id)));
+			juices = juices.filter((row) => juiceIds.has(String(row.id)));
+			planRows = planRows.filter((row) => touchesStores(juiceIds, row.items));
+			orders = orders.filter((row) => touchesStores(juiceIds, row.items));
+			requests = requests.filter((row) => touchesStores(juiceIds, row.items, row.item_swaps));
+			marks = customers === null ? marks : marks.filter((row) => customers.has(String(row.user_id)));
+		}
+		const counts = await requestCounts(db, juiceIds === null ? undefined : requests);
 		return {
 			users: users.length,
 			admins: users.filter((row) => row.role === "admin").length,
@@ -3409,7 +3478,7 @@ export function registerCroco(app: App) {
 			juices: juices.length,
 			visible_juices: juices.filter((row) => !bool(row.archived)).length,
 			archived_juices: juices.filter((row) => bool(row.archived)).length,
-			catalog_plans: num(plans?.total),
+			catalog_plans: planRows.length,
 			...counts,
 			delivered_today: marks.filter((row) => row.status === "delivered").length,
 			not_delivered_today: marks.filter((row) => row.status === "not_delivered").length,
@@ -3422,11 +3491,15 @@ export function registerCroco(app: App) {
 
 	// ---- admin: orders and plan requests ----
 	route("get", "/admin/orders", "admin", "All orders", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
+		const juiceIds = await juiceIdSet(c.env.DB, admin);
 		const status = c.req.query("status_filter");
 		const rows = status && ORDER_STATUSES.includes(status) ? await many(c.env.DB, "SELECT * FROM juice_orders WHERE status = ? ORDER BY created_at DESC", status) : await many(c.env.DB, "SELECT * FROM juice_orders ORDER BY created_at DESC");
 		const result = [];
-		for (const row of rows) result.push(adminOrderOut(row, await userById(c.env.DB, row.user_id)));
+		for (const row of rows) {
+			if (!touchesStores(juiceIds, row.items)) continue;
+			result.push(adminOrderOut(row, await userById(c.env.DB, row.user_id)));
+		}
 		return result;
 	}, { auth: true, query: ["status_filter"] });
 
@@ -3439,11 +3512,12 @@ export function registerCroco(app: App) {
 			const body = await bodyOf(c);
 			const status = body.status === undefined || body.status === null ? null : literal(body, "status", ORDER_STATUSES);
 			const proofInput = optStr(body, "proof_image");
-			await currentAdmin(c);
+			const admin = await currentAdmin(c);
 			const db = c.env.DB;
 			const proof = proofInput ? await normalizeStoredImage(db, proofInput) : proofInput;
 			const row = await one(db, "SELECT * FROM juice_orders WHERE id = ?", c.req.param("orderId"));
 			if (!row) throw new HttpError(404, "Order not found.");
+			await assertRecordAccess(db, admin, row.items);
 			if (status === null && proof === null) throw new HttpError(400, "Nothing to update.");
 			if (status !== null) await run(db, "UPDATE juice_orders SET status = ? WHERE id = ?", status, row.id);
 			if (proof !== null) await run(db, "UPDATE juice_orders SET proof_image = ? WHERE id = ?", proof || null, row.id);
@@ -3465,6 +3539,7 @@ export function registerCroco(app: App) {
 			const db = c.env.DB;
 			const row = await one(db, "SELECT * FROM juice_orders WHERE id = ?", c.req.param("orderId"));
 			if (!row) throw new HttpError(404, "Order not found.");
+			await assertRecordAccess(db, admin, row.items);
 			const payStatus = String(row.payment_status || "").toLowerCase();
 			if (["refunded", "refund_wallet", "refund_pending", "partial_refund"].includes(payStatus)) {
 				throw new HttpError(400, "This order is already refunded.");
@@ -3516,19 +3591,24 @@ export function registerCroco(app: App) {
 	);
 
 	route("get", "/admin/plan-requests", "admin", "All plan requests", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
+		const juiceIds = await juiceIdSet(c.env.DB, admin);
 		const status = c.req.query("status_filter");
 		const rows = status ? await many(c.env.DB, "SELECT * FROM plan_requests WHERE status = ? ORDER BY created_at DESC", status) : await many(c.env.DB, "SELECT * FROM plan_requests ORDER BY created_at DESC");
 		const result = [];
-		for (const row of rows) result.push(adminRequestOut(row, await userById(c.env.DB, row.user_id)));
+		for (const row of rows) {
+			if (!touchesStores(juiceIds, row.items, row.item_swaps)) continue;
+			result.push(adminRequestOut(row, await userById(c.env.DB, row.user_id)));
+		}
 		return result;
 	}, { auth: true, query: ["status_filter"] });
 
 	const decide = async (c: Ctx, accept: boolean) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
 		const db = c.env.DB;
 		const row = await one(db, "SELECT * FROM plan_requests WHERE id = ?", c.req.param("requestId"));
 		if (!row) throw new HttpError(404, "Request not found.");
+		await assertRecordAccess(db, admin, row.items, row.item_swaps);
 		if (row.status !== "pending") throw new HttpError(409, `Request is already ${row.status}.`);
 		if (accept) {
 			const current = await latestRequest(db, row.user_id, "accepted");
@@ -3555,10 +3635,11 @@ export function registerCroco(app: App) {
 		"admin",
 		"Cancel an active subscription",
 		async (c) => {
-			await currentAdmin(c);
+			const admin = await currentAdmin(c);
 			const db = c.env.DB;
 			const row = await one(db, "SELECT * FROM plan_requests WHERE id = ?", c.req.param("requestId"));
 			if (!row) throw new HttpError(404, "Request not found.");
+			await assertRecordAccess(db, admin, row.items, row.item_swaps);
 			if (row.status !== "accepted") throw new HttpError(409, "Only an active plan can be cancelled.");
 			const today = todayIso();
 			const [start] = planWindow(row);
@@ -3570,11 +3651,13 @@ export function registerCroco(app: App) {
 	);
 
 	route("get", "/admin/delivery-marks", "admin", "Delivery marks for dates", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
+		const customers = await customerIdSet(c.env.DB, admin);
 		const wanted = (c.req.query("dates") ?? "").split(",").map((part) => part.trim()).filter(Boolean).map((value) => value.slice(0, 10));
 		if (!wanted.length) return [];
 		const rows = await many(c.env.DB, `SELECT * FROM delivery_marks WHERE delivery_date IN (${wanted.map(() => "?").join(",")})`, ...wanted);
-		return rows.map((row) => ({ id: String(row.id), user_id: String(row.user_id), delivery_date: String(row.delivery_date), status: String(row.status) }));
+		const visible = customers === null ? rows : rows.filter((row) => customers.has(String(row.user_id)));
+		return visible.map((row) => ({ id: String(row.id), user_id: String(row.user_id), delivery_date: String(row.delivery_date), status: String(row.status) }));
 	}, { auth: true, query: ["dates"] });
 
 	route(
@@ -3880,8 +3963,10 @@ export function registerCroco(app: App) {
 	}, { auth: true });
 
 	route("get", "/admin/plans", "admin", "All plans", async (c) => {
-		await currentAdmin(c);
-		return (await listPlans(c.env.DB)).map(planOut);
+		const admin = await currentAdmin(c);
+		const juiceIds = await juiceIdSet(c.env.DB, admin);
+		const rows = await listPlans(c.env.DB);
+		return rows.filter((row) => touchesStores(juiceIds, row.items)).map(planOut);
 	}, { auth: true });
 
 	const readPlan = (body: Body) => {
@@ -4123,7 +4208,8 @@ export function registerCroco(app: App) {
 
 	// ---- admin: payments ----
 	route("get", "/admin/wallet/ledger", "admin", "Wallet ledger", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
+		const customers = await customerIdSet(c.env.DB, admin);
 		const rows = await many(c.env.DB, "SELECT * FROM wallet_entries ORDER BY created_at DESC LIMIT 50");
 		const users = new Map<string, Row>();
 		for (const row of rows) {
@@ -4133,7 +4219,12 @@ export function registerCroco(app: App) {
 				if (person) users.set(userId, person);
 			}
 		}
-		return rows.map((row) => walletEntryOut(row, users.get(String(row.user_id)) ?? null));
+		const visible = customers === null ? rows : rows.filter((row) => {
+			const person = users.get(String(row.user_id));
+			if (person && String(person.role || "customer") !== "customer") return true;
+			return customers.has(String(row.user_id));
+		});
+		return visible.map((row) => walletEntryOut(row, users.get(String(row.user_id)) ?? null));
 	}, { auth: true });
 
 	route("post", "/admin/wallet/credit", "admin", "Add wallet money", async (c) => {
@@ -4146,12 +4237,14 @@ export function registerCroco(app: App) {
 	}, { auth: true });
 
 	route("get", "/admin/payments", "admin", "Razorpay transactions", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
 		try {
 			const result = await razorpay(c.env, "/payments?count=100");
 			if (!result.ok) raiseApi(result);
+			const juiceIds = await juiceIdSet(c.env.DB, admin);
+			const paymentIds = juiceIds === null ? null : new Set((await many(c.env.DB, "SELECT payment_id, items FROM juice_orders")).filter((row) => row.payment_id && touchesStores(juiceIds, row.items)).map((row) => String(row.payment_id)));
 			let captured = 0;
-			const items = (Array.isArray(result.data.items) ? (result.data.items as Row[]) : []).map((row) => {
+			const items = (Array.isArray(result.data.items) ? (result.data.items as Row[]) : []).filter((row) => paymentIds === null || paymentIds.has(String(row.id ?? ""))).map((row) => {
 				const amount = Math.trunc(num(row.amount));
 				const status = String(row.status ?? "");
 				if (status === "captured") captured += amount;
@@ -4229,15 +4322,33 @@ export function registerCroco(app: App) {
 	}, { auth: true });
 
 	route("get", "/admin/support-tickets", "admin", "All support chats", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
+		const juiceIds = await juiceIdSet(c.env.DB, admin);
 		const result = [];
-		for (const row of await many(c.env.DB, "SELECT * FROM support_tickets ORDER BY created_at DESC")) result.push(ticketOut(row, await userById(c.env.DB, row.user_id)));
+		for (const row of await many(c.env.DB, "SELECT * FROM support_tickets ORDER BY created_at DESC")) {
+			if (juiceIds !== null && row.order_id) {
+				const order = await one(c.env.DB, "SELECT items FROM juice_orders WHERE id = ?", row.order_id);
+				if (!order || !touchesStores(juiceIds, order.items)) continue;
+			} else if (juiceIds !== null && row.plan_request_id) {
+				const request = await one(c.env.DB, "SELECT items, item_swaps FROM plan_requests WHERE id = ?", row.plan_request_id);
+				if (!request || !touchesStores(juiceIds, request.items, request.item_swaps)) continue;
+			}
+			result.push(ticketOut(row, await userById(c.env.DB, row.user_id)));
+		}
 		return result;
 	}, { auth: true });
 
 	route("get", "/admin/support-tickets/:ticketId", "admin", "One support chat", async (c) => {
-		await currentAdmin(c);
+		const admin = await currentAdmin(c);
 		const ticket = await getTicket(c.env.DB, c.req.param("ticketId"));
+		const juiceIds = await juiceIdSet(c.env.DB, admin);
+		if (juiceIds !== null && ticket.order_id) {
+			const order = await one(c.env.DB, "SELECT items FROM juice_orders WHERE id = ?", ticket.order_id);
+			if (!order || !touchesStores(juiceIds, order.items)) throw new HttpError(403, "You do not have access to this store.");
+		} else if (juiceIds !== null && ticket.plan_request_id) {
+			const request = await one(c.env.DB, "SELECT items, item_swaps FROM plan_requests WHERE id = ?", ticket.plan_request_id);
+			if (!request || !touchesStores(juiceIds, request.items, request.item_swaps)) throw new HttpError(403, "You do not have access to this store.");
+		}
 		return ticketDetail(c.env.DB, ticket, await userById(c.env.DB, ticket.user_id));
 	}, { auth: true });
 
