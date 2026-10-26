@@ -31,6 +31,7 @@ const ADMIN_PAGES = [
 	"payments",
 	"tickets",
 	"delivery",
+	"rapido",
 	"slots",
 	"data",
 	"maps",
@@ -1746,16 +1747,21 @@ function moneyOfCharge(value: number): number {
 	return Math.round((Number(value) || 0) * 100) / 100;
 }
 
+function chargeOn(enabled: unknown, amount: number): boolean {
+	return bool(enabled) || amount > 0;
+}
+
 function quoteCharges(store: Row, subtotal: number, km: number) {
-	const packaging = bool(store.packaging_enabled) ? moneyOfCharge(num(store.packaging_amount)) : 0;
-	const delivery = bool(store.delivery_fee_enabled) ? moneyOfCharge(Math.max(0, km) * num(store.delivery_fee_per_km)) : 0;
-	const platform = bool(store.platform_fee_enabled)
+	const packaging = chargeOn(store.packaging_enabled, num(store.packaging_amount)) ? moneyOfCharge(num(store.packaging_amount)) : 0;
+	const delivery = chargeOn(store.delivery_fee_enabled, num(store.delivery_fee_per_km)) ? moneyOfCharge(Math.max(0, km) * num(store.delivery_fee_per_km)) : 0;
+	const platformOn = chargeOn(store.platform_fee_enabled, num(store.platform_fee_amount)) || num(store.platform_fee_percent) > 0;
+	const platform = platformOn
 		? moneyOfCharge(subtotal * (num(store.platform_fee_percent) / 100) + num(store.platform_fee_amount))
 		: 0;
-	const platformGst = bool(store.platform_fee_enabled)
+	const platformGst = platformOn
 		? moneyOfCharge(platform * (num(store.platform_gst_percent) / 100))
 		: 0;
-	const tax = bool(store.tax_enabled) ? moneyOfCharge(subtotal * (num(store.tax_percent) / 100)) : 0;
+	const tax = chargeOn(store.tax_enabled, num(store.tax_percent)) ? moneyOfCharge(subtotal * (num(store.tax_percent) / 100)) : 0;
 	return {
 		subtotal: moneyOfCharge(subtotal),
 		packaging_fee: packaging,
@@ -4129,18 +4135,18 @@ export function registerCroco(app: App) {
 		const taxPercent = reqNum(body, "tax_percent", { ge: 0, le: 100 });
 		await currentAdmin(c);
 		await storeRow(c.env.DB);
+		const packagingOn = bool(body.packaging_enabled) || packagingAmount > 0;
+		const platformOn = bool(body.platform_fee_enabled) || platformPercent > 0 || platformAmount > 0;
+		const deliveryOn = bool(body.delivery_fee_enabled) || perKm > 0;
+		const taxOn = bool(body.tax_enabled) || taxPercent > 0;
 		await run(
 			c.env.DB,
-			`UPDATE store_settings SET packaging_enabled = ?, packaging_amount = ?, platform_fee_enabled = ?, platform_fee_percent = ?, platform_fee_amount = ?, platform_gst_percent = ?, delivery_fee_enabled = ?, delivery_fee_per_km = ?, tax_enabled = ?, tax_percent = ? WHERE id = ?`,
-			bool(body.packaging_enabled),
+			`UPDATE store_settings SET packaging_enabled = ${sqlBool(packagingOn)}, packaging_amount = ?, platform_fee_enabled = ${sqlBool(platformOn)}, platform_fee_percent = ?, platform_fee_amount = ?, platform_gst_percent = ?, delivery_fee_enabled = ${sqlBool(deliveryOn)}, delivery_fee_per_km = ?, tax_enabled = ${sqlBool(taxOn)}, tax_percent = ? WHERE id = ?`,
 			Math.round(packagingAmount * 100) / 100,
-			bool(body.platform_fee_enabled),
 			Math.round(platformPercent * 100) / 100,
 			Math.round(platformAmount * 100) / 100,
 			Math.round(platformGst * 100) / 100,
-			bool(body.delivery_fee_enabled),
 			Math.round(perKm * 100) / 100,
-			bool(body.tax_enabled),
 			Math.round(taxPercent * 100) / 100,
 			STORE_ID,
 		);

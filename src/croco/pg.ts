@@ -53,6 +53,10 @@ const BOOL_KEYS = new Set([
 	"show_delivery_instant",
 	"show_delivery_slot",
 	"claimed",
+	"packaging_enabled",
+	"platform_fee_enabled",
+	"delivery_fee_enabled",
+	"tax_enabled",
 ]);
 
 function asBool(value: unknown): boolean {
