@@ -316,12 +316,9 @@ export async function d1Tables(db: D1Database): Promise<string[]> {
 }
 
 export async function setupD1(db: D1Database): Promise<string[]> {
-	const before = new Set(await d1Tables(db));
-	for (const statement of sqliteMigrationSql().split(";")) {
-		const sql = statement.trim();
-		if (sql) await db.prepare(sql).run();
-	}
-	const after = await d1Tables(db);
+	const before = new Set(await d1Tables(db).catch(() => []));
+	await db.exec(sqliteMigrationSql());
+	const after = await d1Tables(db).catch(() => [] as string[]);
 	return after.filter((name) => !before.has(name));
 }
 

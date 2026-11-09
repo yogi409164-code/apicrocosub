@@ -5,6 +5,7 @@
 	],
 	"main": "src/index.ts",
 	"name": "apicrocosub",
+	"account_id": "ae708bbbb82bcc918880d2bbc75cfff0",
 	"upload_source_maps": true,
 	"observability": {
 		"enabled": true
@@ -15,7 +16,7 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "crocosublive",
+			"database_name": "crocosiplive",
 			"database_id": "2cabddc6-fe55-44b4-b2a9-b5172581caac"
 		}
 	],
