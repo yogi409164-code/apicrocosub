@@ -311,8 +311,8 @@ export function sqliteMigrationSql(): string {
 }
 
 export async function d1Tables(db: D1Database): Promise<string[]> {
-	const result = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all<{ name: string }>();
-	return (result.results ?? []).map((row) => row.name);
+	const result = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all<{ name: string }>();
+	return (result.results ?? []).map((row) => String(row.name ?? "")).filter((name) => name && !name.startsWith("sqlite_") && !name.startsWith("_cf_"));
 }
 
 export async function setupD1(db: D1Database): Promise<string[]> {

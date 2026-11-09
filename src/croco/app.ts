@@ -2517,8 +2517,15 @@ export function registerCroco(app: App) {
 	route("get", "/db/check", "health", "Check the database", async (c) => {
 		const pg = postgresOf(c.env.DB);
 		const schema = pg ? setting(c.env, "DB_SCHEMA", DB_SCHEMA) : "";
-		const tables = pg ? await pg.tables() : await d1Tables(c.env.DB);
-		const users = tables.includes("users") ? num((await one(c.env.DB, "SELECT COUNT(*) AS total FROM users"))?.total) : 0;
+		let tables: string[] = [];
+		let users = 0;
+		try {
+			tables = pg ? await pg.tables() : await d1Tables(c.env.DB);
+			users = tables.includes("users") ? num((await one(c.env.DB, "SELECT COUNT(*) AS total FROM users"))?.total) : 0;
+		} catch (error) {
+			const detail = error instanceof Error ? error.message.split("\n")[0].slice(0, 300) : "Database check failed.";
+			throw new HttpError(503, detail || "Database check failed.");
+		}
 		return {
 			status: tables.length ? "ok" : "missing_schema",
 			connected: true,

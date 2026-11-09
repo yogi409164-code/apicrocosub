@@ -21,7 +21,8 @@ app.use("/api/*", async (c, next) => {
 
 app.onError((err, c) => {
 	console.error("Global error handler caught:", err);
-	return c.json({ detail: "Internal Server Error" }, 500);
+	const detail = err instanceof Error ? err.message.split("\n")[0].slice(0, 300) : "Internal Server Error";
+	return c.json({ detail: detail || "Internal Server Error" }, 500);
 });
 
 app.notFound((c) => c.json({ detail: "Not Found" }, 404));
@@ -74,10 +75,13 @@ function needsDatabase(pathname: string): boolean {
 	return !OPEN_PATHS.has(pathname);
 }
 
-function useCloudflareD1(env: EngineBindings): boolean {
-	if ((env.DB_BACKEND ?? "").trim().toLowerCase() === "postgres") return false;
+function wantsD1(env: EngineBindings): boolean {
+	return (env.DB_BACKEND ?? "").trim().toLowerCase() === "d1";
+}
+
+function cloudflareD1(env: EngineBindings): D1Database | null {
 	const db = env.DB as D1Database | undefined;
-	return !!db && typeof db.prepare === "function" && typeof db.exec === "function";
+	return db && typeof db.prepare === "function" ? db : null;
 }
 
 export default {
@@ -86,7 +90,10 @@ export default {
 			if (!needsDatabase(new URL(request.url).pathname)) {
 				return await app.fetch(request, env, ctx);
 			}
-			if (useCloudflareD1(env)) {
+			if (wantsD1(env)) {
+				if (!cloudflareD1(env)) {
+					return Response.json({ detail: "D1 binding DB is not available on this Worker." }, { status: 503, headers: { "access-control-allow-origin": "*" } });
+				}
 				return await app.fetch(request, env, ctx);
 			}
 			const source = Source.open(env);
