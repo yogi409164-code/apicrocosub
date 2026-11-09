@@ -74,10 +74,19 @@ function needsDatabase(pathname: string): boolean {
 	return !OPEN_PATHS.has(pathname);
 }
 
+function useCloudflareD1(env: EngineBindings): boolean {
+	if ((env.DB_BACKEND ?? "").trim().toLowerCase() === "postgres") return false;
+	const db = env.DB as D1Database | undefined;
+	return !!db && typeof db.prepare === "function" && typeof db.exec === "function";
+}
+
 export default {
 	async fetch(request, env, ctx) {
 		try {
 			if (!needsDatabase(new URL(request.url).pathname)) {
+				return await app.fetch(request, env, ctx);
+			}
+			if (useCloudflareD1(env)) {
 				return await app.fetch(request, env, ctx);
 			}
 			const source = Source.open(env);

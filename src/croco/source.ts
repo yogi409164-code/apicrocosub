@@ -2,6 +2,10 @@ import { DB_SCHEMA, PgDatabase, type PostgresEnv } from "./pg";
 
 export type EngineBindings = Env & PostgresEnv & {
 	DB_SCHEMA?: string;
+	DB_BACKEND?: string;
+	D1_DATABASE_NAME?: string;
+	CLOUDFLARE_ACCOUNT_ID?: string;
+	CLOUDFLARE_API_TOKEN?: string;
 };
 
 let shared: PgDatabase | undefined;

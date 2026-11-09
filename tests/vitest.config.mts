@@ -13,6 +13,7 @@ export default defineConfig({
 				compatibilityFlags: ["experimental", "nodejs_compat"],
 				bindings: {
 					DB_SCHEMA: pgSchema,
+					DB_BACKEND: "postgres",
 				},
 			},
 		}),

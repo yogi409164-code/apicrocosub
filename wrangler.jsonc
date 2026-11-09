@@ -12,8 +12,17 @@
 	"assets": {
 		"directory": "./public"
 	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "crocosiplive",
+			"database_id": "2cabddc6-fe55-44b4-b2a9-b5172581caac"
+		}
+	],
 	"vars": {
 		"APP_NAME": "Crocosip API",
+		"DB_BACKEND": "d1",
+		"D1_DATABASE_NAME": "crocosiplive",
 		"POSTGRES_HOST": "dbaas-db-1025064-do-user-46253107-0.e.db.ondigitalocean.com",
 		"POSTGRES_PORT": "25060",
 		"POSTGRES_USER": "doadmin",

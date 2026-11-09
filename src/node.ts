@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHttpD1 } from "./croco/d1http";
 import worker from "./index";
 import type { EngineBindings } from "./croco/source";
 
@@ -25,7 +26,7 @@ function loadFile(name: string): Record<string, string> {
 }
 
 function loadEnv(): EngineBindings {
-	const wrangler = JSON.parse(fs.readFileSync(path.join(root, "wrangler.jsonc"), "utf8")) as { vars?: Record<string, string> };
+	const wrangler = JSON.parse(fs.readFileSync(path.join(root, "wrangler.jsonc"), "utf8")) as { vars?: Record<string, string>; d1_databases?: { database_id?: string }[] };
 	const fromProcess: Record<string, string> = {};
 	for (const [key, value] of Object.entries(process.env)) {
 		if (value !== undefined) fromProcess[key] = value;
@@ -34,6 +35,13 @@ function loadEnv(): EngineBindings {
 	const certFile = path.join(root, "certs", "digitalocean-ca.pem");
 	if (!env.POSTGRES_CA_CERT?.trim() && fs.existsSync(certFile)) {
 		env.POSTGRES_CA_CERT = fs.readFileSync(certFile, "utf8");
+	}
+	if ((env.DB_BACKEND ?? "").trim().toLowerCase() === "d1") {
+		env.DB = createHttpD1({
+			databaseId: wrangler.d1_databases?.[0]?.database_id ?? "",
+			accountId: env.CLOUDFLARE_ACCOUNT_ID,
+			token: env.CLOUDFLARE_API_TOKEN,
+		});
 	}
 	return env;
 }
@@ -56,7 +64,8 @@ serve(
 		port,
 	},
 	() => {
-		console.log(`CrocoSip API (Node, DigitalOcean Postgres) http://${hostname}:${port}`);
+		const backend = (env.DB_BACKEND ?? "").trim().toLowerCase() === "d1" ? "Cloudflare D1 crocosiplive" : "DigitalOcean Postgres";
+		console.log(`CrocoSip API (Node, ${backend}) http://${hostname}:${port}`);
 		console.log(`Docs http://${hostname}:${port}/docs`);
 	},
 );

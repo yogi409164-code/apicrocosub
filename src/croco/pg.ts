@@ -259,40 +259,81 @@ export async function schemaTables(sql: Sql, schema: string): Promise<string[]> 
 	return rows.map((row) => String(row.table_name));
 }
 
+export function migrationSql(schema: string): string {
+	const table = (name: string) => `${quoteIdent(schema)}.${name}`;
+	const alters = [
+		`ALTER TABLE ${table("plans")} ADD COLUMN IF NOT EXISTS items TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE ${table("plan_requests")} ADD COLUMN IF NOT EXISTS fulfillment VARCHAR(16) NOT NULL DEFAULT 'delivery'`,
+		`ALTER TABLE ${table("plan_requests")} ADD COLUMN IF NOT EXISTS day_fulfillment TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS show_delivery_instant BOOLEAN NOT NULL DEFAULT TRUE`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS show_delivery_slot BOOLEAN NOT NULL DEFAULT TRUE`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS delivery_slots TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS fulfillment_lock_start INTEGER NOT NULL DEFAULT 360`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS fulfillment_lock_end INTEGER NOT NULL DEFAULT 600`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS packaging_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS packaging_amount DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS platform_fee_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS platform_fee_percent DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS platform_fee_amount DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS platform_gst_percent DOUBLE PRECISION NOT NULL DEFAULT 18`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS delivery_fee_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS delivery_fee_per_km DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS tax_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS tax_percent DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS reward_min_percent INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE ${table("store_settings")} ADD COLUMN IF NOT EXISTS reward_max_percent INTEGER NOT NULL DEFAULT 10`,
+		`ALTER TABLE ${table("juices")} ADD COLUMN IF NOT EXISTS stock_qty INTEGER`,
+		`ALTER TABLE ${table("juices")} ADD COLUMN IF NOT EXISTS store_id VARCHAR(64)`,
+		`ALTER TABLE ${table("roles")} ADD COLUMN IF NOT EXISTS store_ids TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE ${table("users")} ADD COLUMN IF NOT EXISTS store_ids TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE ${table("juice_orders")} ADD COLUMN IF NOT EXISTS packaging_fee DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`ALTER TABLE ${table("juice_orders")} ADD COLUMN IF NOT EXISTS platform_fee DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`ALTER TABLE ${table("juice_orders")} ADD COLUMN IF NOT EXISTS platform_gst DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`ALTER TABLE ${table("juice_orders")} ADD COLUMN IF NOT EXISTS tax_amount DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`ALTER TABLE ${table("juice_orders")} ADD COLUMN IF NOT EXISTS rating INTEGER`,
+		`ALTER TABLE ${table("juice_orders")} ADD COLUMN IF NOT EXISTS payment_id VARCHAR(64)`,
+		`ALTER TABLE ${table("juice_orders")} ADD COLUMN IF NOT EXISTS payment_status VARCHAR(24)`,
+		`ALTER TABLE ${table("users")} ADD COLUMN IF NOT EXISTS wallet_balance DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	];
+	return `${schemaSql(schema)}\n${alters.join(";\n")};`;
+}
+
+/** SQLite DDL for the same tables, with the Postgres schema qualifier removed. */
+export function sqliteMigrationSql(): string {
+	return migrationSql("main")
+		.replace(/CREATE SCHEMA IF NOT EXISTS "main";\s*/g, "")
+		.replaceAll('"main".', "")
+		.replace(/\bTIMESTAMPTZ\b/g, "TEXT")
+		.replace(/\bDOUBLE PRECISION\b/g, "REAL")
+		.replace(/\bBOOLEAN\b/g, "INTEGER")
+		.replace(/\bVARCHAR\(\d+\)/g, "TEXT")
+		.replace(/\bnow\(\)/g, "(datetime('now'))");
+}
+
+export async function d1Tables(db: D1Database): Promise<string[]> {
+	const result = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all<{ name: string }>();
+	return (result.results ?? []).map((row) => row.name);
+}
+
+export async function setupD1(db: D1Database): Promise<string[]> {
+	const before = new Set(await d1Tables(db));
+	for (const statement of sqliteMigrationSql().split(";")) {
+		const sql = statement.trim();
+		if (sql) await db.prepare(sql).run();
+	}
+	const after = await d1Tables(db);
+	return after.filter((name) => !before.has(name));
+}
+
+export async function resetD1(db: D1Database): Promise<string[]> {
+	const names = await d1Tables(db);
+	if (!names.length) return [];
+	await db.exec(names.map((name) => `DELETE FROM ${quoteIdent(name)}`).join(";"));
+	return names;
+}
+
 export async function createSchema(sql: Sql, schema: string): Promise<void> {
-	await sql.unsafe(schemaSql(schema)).simple();
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.plans ADD COLUMN IF NOT EXISTS items TEXT NOT NULL DEFAULT ''`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.plan_requests ADD COLUMN IF NOT EXISTS fulfillment VARCHAR(16) NOT NULL DEFAULT 'delivery'`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.plan_requests ADD COLUMN IF NOT EXISTS day_fulfillment TEXT NOT NULL DEFAULT '{}'`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS show_delivery_instant BOOLEAN NOT NULL DEFAULT TRUE`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS show_delivery_slot BOOLEAN NOT NULL DEFAULT TRUE`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_slots TEXT NOT NULL DEFAULT '[]'`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS fulfillment_lock_start INTEGER NOT NULL DEFAULT 360`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS fulfillment_lock_end INTEGER NOT NULL DEFAULT 600`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS packaging_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS packaging_amount DOUBLE PRECISION NOT NULL DEFAULT 0`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS platform_fee_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS platform_fee_percent DOUBLE PRECISION NOT NULL DEFAULT 0`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS platform_fee_amount DOUBLE PRECISION NOT NULL DEFAULT 0`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS platform_gst_percent DOUBLE PRECISION NOT NULL DEFAULT 18`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_fee_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS delivery_fee_per_km DOUBLE PRECISION NOT NULL DEFAULT 0`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS tax_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS tax_percent DOUBLE PRECISION NOT NULL DEFAULT 0`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS reward_min_percent INTEGER NOT NULL DEFAULT 1`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.store_settings ADD COLUMN IF NOT EXISTS reward_max_percent INTEGER NOT NULL DEFAULT 10`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juices ADD COLUMN IF NOT EXISTS stock_qty INTEGER`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juices ADD COLUMN IF NOT EXISTS store_id VARCHAR(64)`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.roles ADD COLUMN IF NOT EXISTS store_ids TEXT NOT NULL DEFAULT '[]'`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.users ADD COLUMN IF NOT EXISTS store_ids TEXT NOT NULL DEFAULT '[]'`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS packaging_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_fee DOUBLE PRECISION NOT NULL DEFAULT 0`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS platform_gst DOUBLE PRECISION NOT NULL DEFAULT 0`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS tax_amount DOUBLE PRECISION NOT NULL DEFAULT 0`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS rating INTEGER`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS payment_id VARCHAR(64)`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.juice_orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(24)`);
-	await sql.unsafe(`ALTER TABLE ${quoteIdent(schema)}.users ADD COLUMN IF NOT EXISTS wallet_balance DOUBLE PRECISION NOT NULL DEFAULT 0`);
+	await sql.unsafe(migrationSql(schema)).simple();
 }
 
 function schemaSql(schema: string): string {

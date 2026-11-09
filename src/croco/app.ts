@@ -1,6 +1,6 @@
 import type { Context, Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { DB_SCHEMA, PgDatabase } from "./pg";
+import { DB_SCHEMA, d1Tables, PgDatabase, resetD1, setupD1 } from "./pg";
 
 type App = Hono<{ Bindings: Env }>;
 type Ctx = Context<{ Bindings: Env }>;
@@ -451,6 +451,7 @@ function ensureSeed(db: D1Database): Promise<void> {
 async function seedAll(db: D1Database): Promise<void> {
 	const pg = postgresOf(db);
 	if (pg) await pg.setup();
+	else await setupD1(db);
 	await seedRoles(db);
 	if (!(await findUser(db, "demo"))) {
 		await run(db, "INSERT OR IGNORE INTO users (id, username, email, name, password_hash, provider, role, special_access, created_at) VALUES ('demo-user', 'demo', 'demo@crocosip.app', 'Demo', ?, 'password', 'customer', FALSE, ?)", await hashPassword("Demo12345"), nowIso());
@@ -2480,18 +2481,21 @@ export function registerCroco(app: App) {
 
 	// ---- health ----
 	route("get", "/", "health", "Service info", (c) => ({ service: setting(c.env, "APP_NAME", "Crocosip API"), docs: "/docs", api: "/api" }));
-	route("get", "/health", "health", "Health check", (c) => ({
-		status: "ok",
-		service: setting(c.env, "APP_NAME", "Crocosip API"),
-		schema: setting(c.env, "DB_SCHEMA", DB_SCHEMA),
-		database: "postgresql",
-	}));
+	route("get", "/health", "health", "Health check", (c) => {
+		const d1 = setting(c.env, "DB_BACKEND", "postgres").toLowerCase() === "d1";
+		return {
+			status: "ok",
+			service: setting(c.env, "APP_NAME", "Crocosip API"),
+			schema: d1 ? "" : setting(c.env, "DB_SCHEMA", DB_SCHEMA),
+			database: d1 ? "d1" : "postgresql",
+		};
+	});
 	route("post", "/db/setup", "health", "Create missing tables and seed data", async (c) => {
 		const pg = postgresOf(c.env.DB);
-		const created = pg ? await pg.setup() : [];
+		const created = pg ? await pg.setup() : await setupD1(c.env.DB);
 		seeded = null;
 		await ensureSeed(c.env.DB);
-		return { status: "ok", schema: setting(c.env, "DB_SCHEMA", DB_SCHEMA), created_tables: created, added_columns: [], errors: [], tables: pg ? await pg.tables() : [] };
+		return { status: "ok", schema: setting(c.env, "DB_SCHEMA", DB_SCHEMA), created_tables: created, added_columns: [], errors: [], tables: pg ? await pg.tables() : await d1Tables(c.env.DB) };
 	});
 	route(
 		"post",
@@ -2503,8 +2507,7 @@ export function registerCroco(app: App) {
 			const password = reqStr(body, "password");
 			if (password !== "password") throw new HttpError(401, "Wrong password.");
 			const pg = postgresOf(c.env.DB);
-			if (!pg) throw new HttpError(503, "Database is not ready.");
-			const cleared = await pg.reset();
+			const cleared = pg ? await pg.reset() : await resetD1(c.env.DB);
 			seeded = null;
 			await ensureSeed(c.env.DB);
 			return { status: "ok", schema: setting(c.env, "DB_SCHEMA", DB_SCHEMA), cleared_tables: cleared, errors: [] };
@@ -2513,20 +2516,20 @@ export function registerCroco(app: App) {
 	);
 	route("get", "/db/check", "health", "Check the database", async (c) => {
 		const pg = postgresOf(c.env.DB);
-		const schema = setting(c.env, "DB_SCHEMA", DB_SCHEMA);
-		const tables = pg ? await pg.tables() : [];
+		const schema = pg ? setting(c.env, "DB_SCHEMA", DB_SCHEMA) : "";
+		const tables = pg ? await pg.tables() : await d1Tables(c.env.DB);
 		const users = tables.includes("users") ? num((await one(c.env.DB, "SELECT COUNT(*) AS total FROM users"))?.total) : 0;
 		return {
 			status: tables.length ? "ok" : "missing_schema",
 			connected: true,
-			host: setting(c.env, "POSTGRES_HOST"),
-			port: int(setting(c.env, "POSTGRES_PORT"), 25060),
-			database: setting(c.env, "POSTGRES_DB"),
+			host: pg ? setting(c.env, "POSTGRES_HOST") : "cloudflare-d1",
+			port: pg ? int(setting(c.env, "POSTGRES_PORT"), 25060) : null,
+			database: pg ? setting(c.env, "POSTGRES_DB") : setting(c.env, "D1_DATABASE_NAME", "crocosiplive"),
 			schema,
 			schema_exists: tables.length > 0,
 			tables,
 			user_count: users,
-			dialect: "postgresql",
+			dialect: pg ? "postgresql" : "d1",
 		};
 	});
 
