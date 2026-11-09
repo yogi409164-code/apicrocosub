@@ -15,8 +15,8 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "crocosiplive",
-			"database_id": "2cabddc6-fe55-44b4-b2a9-b5172581caac"
+            "database_name": "crocosublive",
+            "database_id": "2cabddc6-fe55-44b4-b2a9-b5172581caac"
 		}
 	],
 	"vars": {
