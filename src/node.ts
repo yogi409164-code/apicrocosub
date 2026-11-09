@@ -2,7 +2,7 @@ import { serve } from "@hono/node-server";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHttpD1 } from "./croco/d1http";
+import { createHttpD1, resolveCloudflareToken } from "./croco/d1http";
 import worker from "./index";
 import type { EngineBindings } from "./croco/source";
 
@@ -37,11 +37,18 @@ function loadEnv(): EngineBindings {
 		env.POSTGRES_CA_CERT = fs.readFileSync(certFile, "utf8");
 	}
 	if ((env.DB_BACKEND ?? "").trim().toLowerCase() === "d1") {
-		env.DB = createHttpD1({
-			databaseId: wrangler.d1_databases?.[0]?.database_id ?? "",
-			accountId: env.CLOUDFLARE_ACCOUNT_ID,
-			token: env.CLOUDFLARE_API_TOKEN,
-		});
+		const token = resolveCloudflareToken(env.CLOUDFLARE_API_TOKEN);
+		if (!token) {
+			env.DB_BACKEND = "postgres";
+			console.warn("CLOUDFLARE_API_TOKEN is not set. This Node server is using Postgres. Set CLOUDFLARE_API_TOKEN on the host to use D1 crocosiplive.");
+		} else {
+			env.CLOUDFLARE_API_TOKEN = token;
+			env.DB = createHttpD1({
+				databaseId: env.CLOUDFLARE_DATABASE_ID?.trim() || wrangler.d1_databases?.[0]?.database_id || "",
+				accountId: env.CLOUDFLARE_ACCOUNT_ID || process.env.CF_ACCOUNT_ID,
+				token,
+			});
+		}
 	}
 	return env;
 }

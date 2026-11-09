@@ -6,6 +6,7 @@ export type EngineBindings = Env & PostgresEnv & {
 	D1_DATABASE_NAME?: string;
 	CLOUDFLARE_ACCOUNT_ID?: string;
 	CLOUDFLARE_API_TOKEN?: string;
+	CLOUDFLARE_DATABASE_ID?: string;
 };
 
 let shared: PgDatabase | undefined;

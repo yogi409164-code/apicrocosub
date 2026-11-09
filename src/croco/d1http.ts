@@ -17,6 +17,15 @@ function statements(sql: string): string[] {
 		.filter(Boolean);
 }
 
+export function resolveCloudflareToken(explicit?: string): string {
+	const named = [explicit, process.env.CLOUDFLARE_API_TOKEN, process.env.CF_API_TOKEN, process.env.CLOUDFLARE_TOKEN];
+	for (const value of named) {
+		const token = value?.trim();
+		if (token) return token;
+	}
+	return wranglerToken();
+}
+
 function wranglerToken(): string {
 	const home = os.homedir();
 	const files = [path.join(home, ".wrangler", "config", "default.toml"), path.join(home, "AppData", "Roaming", "xdg.config", ".wrangler", "config", "default.toml")];
@@ -63,7 +72,7 @@ class HttpD1 {
 
 	constructor(private readonly options: HttpD1Options) {
 		this.accountId = options.accountId?.trim() ?? "";
-		this.token = options.token?.trim() || wranglerToken();
+		this.token = resolveCloudflareToken(options.token);
 	}
 
 	prepare(sql: string): HttpStatement {
