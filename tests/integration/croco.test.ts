@@ -30,9 +30,9 @@ const PNG =
 
 describe("Crocosip API", () => {
 	it("answers health and service info", async () => {
-		expect((await call("/health")).body).toMatchObject({ status: "ok", schema: bindings.DB_SCHEMA ?? "Crocosip_mobile_app", database: "postgresql" });
+		expect((await call("/health")).body).toMatchObject({ status: "ok", database: "d1" });
 		const check = (await call("/db/check")).body;
-		expect(check).toMatchObject({ connected: true, dialect: "postgresql" });
+		expect(check).toMatchObject({ connected: true, dialect: "d1" });
 		expect(check.tables).toEqual(expect.arrayContaining(["users", "juices", "uploads", "upload_chunks"]));
 		expect(check.user_count).toBeGreaterThanOrEqual(2);
 		expect((await call("/")).body).toMatchObject({ docs: "/docs", api: "/api" });

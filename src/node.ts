@@ -32,24 +32,15 @@ function loadEnv(): EngineBindings {
 		if (value !== undefined) fromProcess[key] = value;
 	}
 	const env = { ...(wrangler.vars ?? {}), ...loadFile(".dev.vars"), ...loadFile(".env"), ...fromProcess } as EngineBindings;
-	const certFile = path.join(root, "certs", "digitalocean-ca.pem");
-	if (!env.POSTGRES_CA_CERT?.trim() && fs.existsSync(certFile)) {
-		env.POSTGRES_CA_CERT = fs.readFileSync(certFile, "utf8");
-	}
-	if ((env.DB_BACKEND ?? "").trim().toLowerCase() === "d1") {
-		const token = resolveCloudflareToken(env.CLOUDFLARE_API_TOKEN);
-		if (!token) {
-			env.DB_BACKEND = "postgres";
-			console.warn("CLOUDFLARE_API_TOKEN is not set. This Node server is using Postgres. Set CLOUDFLARE_API_TOKEN on the host to use D1 crocosiplive.");
-		} else {
-			env.CLOUDFLARE_API_TOKEN = token;
-			env.DB = createHttpD1({
-				databaseId: env.CLOUDFLARE_DATABASE_ID?.trim() || wrangler.d1_databases?.[0]?.database_id || "",
-				accountId: env.CLOUDFLARE_ACCOUNT_ID || process.env.CF_ACCOUNT_ID,
-				token,
-			});
-		}
-	}
+	const token = resolveCloudflareToken(env.CLOUDFLARE_API_TOKEN);
+	if (!token) throw new Error("CLOUDFLARE_API_TOKEN is not set. Add it to apicrocosub/.dev.vars.");
+	env.DB_BACKEND = "d1";
+	env.CLOUDFLARE_API_TOKEN = token;
+	env.DB = createHttpD1({
+		databaseId: env.CLOUDFLARE_DATABASE_ID?.trim() || wrangler.d1_databases?.[0]?.database_id || "",
+		accountId: env.CLOUDFLARE_ACCOUNT_ID || process.env.CF_ACCOUNT_ID,
+		token,
+	});
 	return env;
 }
 
@@ -71,8 +62,7 @@ serve(
 		port,
 	},
 	() => {
-		const backend = (env.DB_BACKEND ?? "").trim().toLowerCase() === "d1" ? "Cloudflare D1 crocosiplive" : "DigitalOcean Postgres";
-		console.log(`CrocoSip API (Node, ${backend}) http://${hostname}:${port}`);
+		console.log(`CrocoSip API (Cloudflare D1) http://${hostname}:${port}`);
 		console.log(`Docs http://${hostname}:${port}/docs`);
 	},
 );

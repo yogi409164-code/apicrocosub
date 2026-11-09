@@ -2481,15 +2481,12 @@ export function registerCroco(app: App) {
 
 	// ---- health ----
 	route("get", "/", "health", "Service info", (c) => ({ service: setting(c.env, "APP_NAME", "Crocosip API"), docs: "/docs", api: "/api" }));
-	route("get", "/health", "health", "Health check", (c) => {
-		const d1 = setting(c.env, "DB_BACKEND", "postgres").toLowerCase() === "d1";
-		return {
-			status: "ok",
-			service: setting(c.env, "APP_NAME", "Crocosip API"),
-			schema: d1 ? "" : setting(c.env, "DB_SCHEMA", DB_SCHEMA),
-			database: d1 ? "d1" : "postgresql",
-		};
-	});
+	route("get", "/health", "health", "Health check", (c) => ({
+		status: "ok",
+		service: setting(c.env, "APP_NAME", "Crocosip API"),
+		schema: "",
+		database: "d1",
+	}));
 	route("post", "/db/setup", "health", "Create missing tables and seed data", async (c) => {
 		const pg = postgresOf(c.env.DB);
 		const created = pg ? await pg.setup() : await setupD1(c.env.DB);

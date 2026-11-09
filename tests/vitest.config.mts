@@ -1,8 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
-const pgSchema = process.env.CROCO_PG_SCHEMA ?? "crocosip_worker_test";
-
 export default defineConfig({
 	plugins: [
 		cloudflareTest({
@@ -12,8 +10,7 @@ export default defineConfig({
 			miniflare: {
 				compatibilityFlags: ["experimental", "nodejs_compat"],
 				bindings: {
-					DB_SCHEMA: pgSchema,
-					DB_BACKEND: "postgres",
+					DB_BACKEND: "d1",
 				},
 			},
 		}),

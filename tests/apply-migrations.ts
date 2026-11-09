@@ -1,9 +1,4 @@
 import { env } from "cloudflare:test";
-import { Source } from "../src/croco/source";
+import { setupD1 } from "../src/croco/pg";
 
-const source = Source.open(env);
-try {
-	await source.db.setup();
-} finally {
-	await source.close();
-}
+await setupD1(env.DB);

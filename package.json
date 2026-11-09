@@ -1,6 +1,6 @@
 {
 	"name": "apicrocosub",
-	"description": "CrocoSip API Worker (Hono + DigitalOcean PostgreSQL).",
+	"description": "CrocoSip API Worker (Hono + Cloudflare D1).",
 	"cloudflare": {
 		"label": "Backend OpenAPI Template",
 		"products": [
@@ -37,7 +37,6 @@
 		"api": "node scripts/run-node-api.mjs",
 		"start": "node scripts/run-node-api.mjs",
 		"deploy": "node scripts/run-wrangler.mjs deploy",
-		"setup:db": "node scripts/setup-cloudflare-db.mjs",
 		"secrets": "node scripts/run-wrangler.mjs secret bulk .dev.vars",
 		"dev": "node scripts/run-node-api.mjs",
 		"wrangler": "node scripts/run-wrangler.mjs",

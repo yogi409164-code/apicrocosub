@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import { crocoRoutes, registerCroco } from "./croco/app";
-import { Source, type EngineBindings } from "./croco/source";
+import type { EngineBindings } from "./croco/source";
 
 const app = new Hono<{ Bindings: EngineBindings }>();
 
@@ -75,10 +75,6 @@ function needsDatabase(pathname: string): boolean {
 	return !OPEN_PATHS.has(pathname);
 }
 
-function wantsD1(env: EngineBindings): boolean {
-	return (env.DB_BACKEND ?? "").trim().toLowerCase() === "d1";
-}
-
 function cloudflareD1(env: EngineBindings): D1Database | null {
 	const db = env.DB as D1Database | undefined;
 	return db && typeof db.prepare === "function" ? db : null;
@@ -90,14 +86,10 @@ export default {
 			if (!needsDatabase(new URL(request.url).pathname)) {
 				return await app.fetch(request, env, ctx);
 			}
-			if (wantsD1(env)) {
-				if (!cloudflareD1(env)) {
-					return Response.json({ detail: "D1 binding DB is not available on this Worker." }, { status: 503, headers: { "access-control-allow-origin": "*" } });
-				}
-				return await app.fetch(request, env, ctx);
+			if (!cloudflareD1(env)) {
+				return Response.json({ detail: "Cloudflare D1 binding DB is not available." }, { status: 503, headers: { "access-control-allow-origin": "*" } });
 			}
-			const source = Source.open(env);
-			return await app.fetch(request, { ...env, DB: source.db as unknown as D1Database }, ctx);
+			return await app.fetch(request, env, ctx);
 		} catch (error) {
 			console.error("Worker fetch failed:", error);
 			const detail = error instanceof Error ? error.message.split("\n")[0] : "Worker threw an exception";
